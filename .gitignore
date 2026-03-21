@@ -1,0 +1,26 @@
+# Python Virtual Environment
+venv/
+env/
+.env
+
+# Python Compilation Files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Streamlit Cache
+.streamlit/
+
+# Generated Output / Forensic Temporary Files
+*.pdf
+ela_result.jpg
+temp_*
