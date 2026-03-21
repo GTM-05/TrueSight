@@ -1,22 +1,37 @@
-def generate_final_verdict(url_score, image_score, audio_score, video_score):
+from llm.phi2 import llm_reason_verdict
+
+def generate_final_verdict(all_evidence: dict) -> dict:
     """
-    Fuses the individual module scores into a single final risk score.
+    Fuses the individual module results into a structured final verdict.
+    Uses the LLM to reason over all evidence rather than a simple numeric average.
+    Falls back to averaging if Ollama is unavailable.
     """
-    scores = []
-    if url_score is not None: scores.append(url_score)
-    if image_score is not None: scores.append(image_score)
-    if audio_score is not None: scores.append(audio_score)
-    if video_score is not None: scores.append(video_score)
-    
-    if not scores:
-        return {'final_score': 0, 'risk_level': 'Low', 'summary': 'No data analyzed.'}
-        
-    final_score = sum(scores) / len(scores)
-    
-    risk_level = 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low'
-    
-    return {
-        'final_score': int(final_score),
-        'risk_level': risk_level,
-        'summary': f"Analyzed {len(scores)} modalities. Overall Risk: {risk_level} ({int(final_score)}%)"
-    }
+    if not all_evidence:
+        return {
+            'threat_score': 0,
+            'ai_generated_score': 0,
+            'manipulation_score': 0,
+            'final_score': 0,
+            'risk_level': 'Low',
+            'confidence': 'Low',
+            'key_findings': [],
+            'verdict': 'Low',
+            'summary': 'No data analyzed.'
+        }
+
+    verdict = llm_reason_verdict(all_evidence)
+
+    # Normalize: map 'verdict' string to 'risk_level' for backward compatibility
+    risk_level = verdict.get('verdict', 'Low')
+    final_score = verdict.get('final_score', 0)
+
+    verdict['risk_level'] = risk_level
+    verdict['summary'] = (
+        f"Analyzed {len(all_evidence)} modalities. "
+        f"Threat: {verdict.get('threat_score', 0)}% | "
+        f"AI-Generated: {verdict.get('ai_generated_score', 0)}% | "
+        f"Manipulation: {verdict.get('manipulation_score', 0)}% | "
+        f"Overall: {risk_level} ({final_score}%)"
+    )
+
+    return verdict

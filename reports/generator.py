@@ -133,6 +133,44 @@ def generate_pdf_report(report_data, output_path="Forensic_Dossier.pdf"):
             ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
         ]))
         elements.append(mod_table)
+        elements.append(Spacer(1, 15))
+
+        # 4b. LLM-REASONED CATEGORY SCORES
+        elements.append(Paragraph("2b. LLM-REASONED CATEGORY RISK SCORES (Phi-3 Mini)", header_style))
+        
+        cat_scores = [
+            ["Risk Category", "Score", "Interpretation"],
+            ["🦠 Threat (Malware / Steganography)", f"{report_data.get('threat_score', 0)}%",
+             "High" if report_data.get('threat_score', 0) >= 60 else "Medium" if report_data.get('threat_score', 0) >= 30 else "Low"],
+            ["🤖 AI-Generated Content", f"{report_data.get('ai_generated_score', 0)}%",
+             "High" if report_data.get('ai_generated_score', 0) >= 60 else "Medium" if report_data.get('ai_generated_score', 0) >= 30 else "Low"],
+            ["🎭 Deepfake / Manipulation", f"{report_data.get('manipulation_score', 0)}%",
+             "High" if report_data.get('manipulation_score', 0) >= 60 else "Medium" if report_data.get('manipulation_score', 0) >= 30 else "Low"],
+            ["⚡ Combined Final Score", f"{report_data.get('final_score', 0)}%", f"Confidence: {report_data.get('confidence', 'N/A')}"],
+        ]
+        
+        cat_table = Table(cat_scores, colWidths=[3*inch, 1*inch, 2*inch])
+        cat_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1A237E")),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (1,0), (2,-1), 'CENTER'),
+            ('ALIGN', (0,0), (0,-1), 'LEFT'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#E3F2FD")),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+        ]))
+        elements.append(cat_table)
+        
+        # Key Findings from LLM
+        key_findings = report_data.get('key_findings', [])
+        if key_findings:
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph("Key LLM Findings:", ParagraphStyle('FindingsHeader', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, spaceBefore=5)))
+            for finding in key_findings:
+                elements.append(Paragraph(f"• {finding}", ParagraphStyle('Finding', parent=normal_style, leftIndent=15)))
+        
         elements.append(Spacer(1, 20))
         
         # 5. AI FORENSIC EXPLANATION (3-STAGE)
