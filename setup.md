@@ -1,132 +1,159 @@
-# TrueSight System Setup & Prerequisites
+# TrueSight — Setup Guide
 
-This document covers installation for all platforms and explains the dual-app LLM architecture.
+## Prerequisites (All Platforms)
 
----
+Before you start, install these **in order**:
 
-## 🛠️ 1. Core Prerequisites
+### 1. Python 3.10+
 
-| Dependency | Purpose | Required For |
-|---|---|---|
-| Python 3.10+ | Core runtime | Both modes |
-| FFmpeg | Video frame/audio extraction | Both modes |
-| Ollama | Local LLM runtime | Both modes |
-| `phi` model | Report narration | `app.py` (Standard) |
-| `phi3:mini` model | Full evidence reasoning + report | `app-ai.py` (AI-Enhanced) |
+| OS | Command |
+|---|---|
+| Ubuntu/Linux | `sudo apt install python3 python3-pip python3-venv -y` |
+| macOS | `brew install python` |
+| Windows | Download from [python.org](https://www.python.org/downloads/) — check **Add to PATH** |
 
----
-
-## 🧠 2. Two Modes, Two LLMs
-
-### Standard Mode (`app.py`) — uses `phi` (Phi-2, ~1.6GB)
-The LLM is called **once**, after all analysis is complete, to narrate the final 3-stage PDF report. All actual scoring is done by heuristic algorithms.
-
-### AI-Enhanced Mode (`app-ai.py`) — uses `phi3:mini` (~2.3GB)
-The LLM is called **at the fusion stage** — it reads all raw forensic evidence (ELA metrics, EXIF data, acoustic features, URL features) and reasons over them to produce a structured JSON verdict:
-```json
-{
-  "threat_score": 75,
-  "ai_generated_score": 20,
-  "manipulation_score": 60,
-  "final_score": 65,
-  "confidence": "High",
-  "key_findings": ["Missing EXIF", "High ELA variance"],
-  "verdict": "High"
-}
-```
-This verdict then drives both the UI metric breakdown and the 3-stage narrative report.
-
-**Why offline LLMs?** Cyber forensics requires strict data privacy. Sending potentially malicious payloads to cloud APIs is a security violation. Ollama runs everything 100% locally.
+Verify: `python3 --version`
 
 ---
 
-## 🚀 3. Installation — All Platforms
+### 2. FFmpeg (Required for audio + video metadata)
 
-### Step 1: Clone the Repository
-```bash
-git clone https://github.com/GTM-05/TrueSight.git
-cd TrueSight
-```
+> ⚠️ Without ffmpeg, audio analysis and video metadata scanning are disabled — accuracy drops significantly.
 
-### Step 2: Install FFmpeg
+| OS | Command |
+|---|---|
+| Ubuntu/Linux | `sudo apt install ffmpeg -y` |
+| macOS | `brew install ffmpeg` |
+| Windows | `choco install ffmpeg` OR download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH |
 
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt update && sudo apt install ffmpeg -y
-```
+Verify: `ffmpeg -version` and `ffprobe -version`
 
-**macOS:**
-```bash
-brew install ffmpeg
-```
+---
 
-**Windows:**
-```powershell
-choco install ffmpeg
-# OR download from https://ffmpeg.org/download.html and add to PATH
-```
+### 3. Ollama (Local AI Brain)
 
-### Step 3: Install Ollama
+| OS | Command |
+|---|---|
+| Linux | `curl -fsSL https://ollama.com/install.sh \| sh` |
+| macOS | Download [Ollama.app](https://ollama.com/download) |
+| Windows | Download [OllamaSetup.exe](https://ollama.com/download) |
 
-**Linux / macOS:**
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-**Windows:**
-Download the installer from [ollama.com](https://ollama.com) and run it.
-
-### Step 4: Pull the LLM Model(s)
-
-For **Standard mode** only:
-```bash
-ollama pull phi
-```
-
-For **AI-Enhanced mode** (or both):
+After install, pull the model:
 ```bash
 ollama pull phi3:mini
 ```
 
-### Step 5: Create Python Virtual Environment
-
-**Linux / macOS:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-**Windows:**
-```cmd
-python -m venv venv
-venv\Scripts\activate
-```
-
-### Step 6: Install Python Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### Step 7: Start Ollama (if not already running)
-```bash
-ollama serve
-```
-*Leave this running in a background terminal.*
+Verify: `ollama list` — you should see `phi3:mini`
 
 ---
 
-## ▶️ 4. Running TrueSight
+### Summary Checklist
 
-**Standard Mode** (LLM for report narration only):
+| Tool | Check Command | Required |
+|---|---|---|
+| Python 3.10+ | `python3 --version` | ✅ |
+| pip | `pip --version` | ✅ |
+| ffmpeg | `ffmpeg -version` | ✅ (accuracy) |
+| ffprobe | `ffprobe -version` | ✅ (accuracy) |
+| Ollama | `ollama list` | ✅ (reports) |
+| phi3:mini | `ollama list` shows phi3 | ✅ (reports) |
+
+---
+
+## Installation
+
+```bash
+# Clone the repo
+git clone https://github.com/GTM-05/TrueSight.git
+cd TrueSight
+
+# Create virtual environment
+python3 -m venv venv
+
+# Activate (see OS-specific below)
+
+# Install Python packages
+pip install -r requirements.txt
+```
+
+### Activate Virtual Environment
+
+| OS | Command |
+|---|---|
+| Linux / macOS | `source venv/bin/activate` |
+| Windows (CMD) | `venv\Scripts\activate.bat` |
+| Windows (PowerShell) | `venv\Scripts\Activate.ps1` |
+
+---
+
+## Running the App
+
+### Step 1 — Start Ollama (if not running)
+
+| OS | Command |
+|---|---|
+| Linux / macOS | `ollama serve &` |
+| Windows | Ollama runs automatically in the system tray |
+
+### Step 2 — Launch TrueSight
+
 ```bash
 streamlit run app.py
 ```
-→ Opens at `http://localhost:8501`
 
-**AI-Enhanced Mode** (LLM reasons over all evidence):
-```bash
-streamlit run app-ai.py
-```
-→ Opens at `http://localhost:8501`
+Then open: **http://localhost:8501**
 
-> Both apps share the same heuristic modules and PDF generator. Only the fusion + LLM layer differs.
+---
+
+## Kill / Stop / Reset
+
+### Kill the Streamlit App
+
+| OS | Command |
+|---|---|
+| Linux / macOS | `fuser -k 8501/tcp` |
+| macOS (alternative) | `lsof -ti:8501 \| xargs kill -9` |
+| Windows (CMD) | `netstat -ano \| findstr :8501` → note PID → `taskkill /PID <pid> /F` |
+| Windows (PowerShell) | `Stop-Process -Id (Get-NetTCPConnection -LocalPort 8501).OwningProcess -Force` |
+
+### Kill Ollama
+
+| OS | Command |
+|---|---|
+| Linux | `pkill ollama` |
+| macOS | `pkill ollama` |
+| Windows | Right-click Ollama in system tray → Quit |
+
+### Delete Temp Files (cleanup)
+
+| OS | Command |
+|---|---|
+| Linux / macOS | `rm -f /tmp/tmp*.jpg /tmp/tmp*.mp4 /tmp/tmp*.wav` |
+| Windows (PowerShell) | `Remove-Item "$env:TEMP\tmp*" -Force -ErrorAction SilentlyContinue` |
+
+### Full Reset (wipe venv + restart fresh)
+
+| OS | Command |
+|---|---|
+| Linux / macOS | `deactivate && rm -rf venv && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt` |
+| Windows (PowerShell) | `deactivate; Remove-Item venv -Recurse -Force; python -m venv venv; venv\Scripts\Activate.ps1; pip install -r requirements.txt` |
+
+---
+
+## Performance Tips (8GB RAM)
+
+| Setting | Recommendation |
+|---|---|
+| Enable **Low Resource Mode** sidebar checkbox | Reduces to 1 frame, skips SSIM |
+| Close other apps before video analysis | Frees RAM for ViT model |
+| Use image tab before video | Preloads ViT model into RAM cache |
+
+### RAM Usage by Component
+
+| Module | Approx. RAM |
+|---|---|
+| ViT Image Detector | 200–300 MB |
+| Audio Analysis (librosa) | 80–100 MB |
+| Video Frame Analysis | 300–400 MB |
+| Phi-3 Mini (LLM) | 1.0–1.5 GB |
+| **Total** | **~2.0–2.5 GB** |

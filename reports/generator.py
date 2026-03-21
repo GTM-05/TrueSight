@@ -136,7 +136,7 @@ def generate_pdf_report(report_data, output_path="Forensic_Dossier.pdf"):
         elements.append(Spacer(1, 15))
 
         # 4b. LLM-REASONED CATEGORY SCORES
-        elements.append(Paragraph("2b. LLM-REASONED CATEGORY RISK SCORES (Phi-3 Mini)", header_style))
+        elements.append(Paragraph("2b. LLM-REASONED CATEGORY RISK SCORES (Llama 3.2 1B)", header_style))
         
         cat_scores = [
             ["Risk Category", "Score", "Interpretation"],
@@ -174,11 +174,11 @@ def generate_pdf_report(report_data, output_path="Forensic_Dossier.pdf"):
         elements.append(Spacer(1, 20))
         
         # 5. AI FORENSIC EXPLANATION (3-STAGE)
-        elements.append(Paragraph("3. AI INVESTIGATOR ANALYSIS (PHI-2)", header_style))
+        elements.append(Paragraph("3. AI INVESTIGATOR ANALYSIS (LLAMA 3.2 1B)", header_style))
         
         ai_raw_text = report_data.get('ai_explanation', 'No AI explanation generated.')
         
-        # Parse potential markdown headers (###) from the Phi-2 text into structured paragraphs
+        # Parse potential markdown headers (###) from the Phi-3 text into structured paragraphs
         for line in ai_raw_text.split('\n'):
             line = line.strip()
             if not line:

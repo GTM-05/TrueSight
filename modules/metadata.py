@@ -70,3 +70,54 @@ def check_metadata(image_path):
         'metadata': metadata,
         'risk_level': 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low'
     }
+
+def check_video_metadata(video_path):
+    """
+    Analyzes video metadata using ffprobe for signs of AI generation or editing.
+    """
+    score = 0
+    reasons = []
+    metadata = {}
+    tags = {}  # ensure always defined even if try block fails early
+
+    try:
+        import subprocess
+        import json
+        cmd = [
+            'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+            '-show_format', '-show_streams', video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        data = json.loads(result.stdout)
+        
+        fmt = data.get('format', {})
+        tags = fmt.get('tags', {})
+        
+        # 1. Check for suspicious encoders
+        encoder = tags.get('encoder', '').lower()
+        if any(s in encoder for s in ['lavc', 'ffmpeg', 'handbrake', 'premiere', 'resolve']):
+            # Not necessarily AI, but common in re-encoded/manipulated video
+            score += 15
+            reasons.append(f"Video re-encoded with potentially suspicious software: {encoder}")
+            
+        # 2. Check for missing metadata common in AI generators
+        if not tags or len(tags) < 2:
+            score += 35
+            reasons.append("Highly suspicious: Sparse or missing global metadata tags. Common in raw AI video output.")
+            
+        # 3. Check for specific AI generator markers (rare but possible)
+        if any(k in str(tags).lower() for k in ['sora', 'runway', 'pika', 'stable-video']):
+            score += 90
+            reasons.append("CRITICAL: AI Generator signatures found in metadata.")
+
+    except Exception as e:
+        score += 10
+        reasons.append(f"Metadata scan failed: {str(e)}")
+        
+    final_score = min(100, score)
+    return {
+        'score': final_score,
+        'reasons': reasons,
+        'metadata': tags,
+        'risk_level': 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low'
+    }

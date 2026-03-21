@@ -1,87 +1,93 @@
-# 🕵️ TrueSight: Multimodal Cyber Forensics
+# TrueSight AI — Cyber Forensics Tool
 
-## 📌 Project Summary
-TrueSight is an AI-powered, lightweight desktop forensic application engineered to analyze digital media and web links for malicious manipulation, synthetic AI generation, and embedded cyber threats.
+> **Local. Private. AI-Powered.** No data ever leaves your machine.
 
-Built for modern cyber-investigations, TrueSight performs **offline heuristic modeling** (Error Level Analysis, acoustic fingerprinting, binary malware scanning) with a local LLM for forensic reporting. It ships in **two modes**:
-
-| Mode | Entry Point | LLM Role | Model |
-|---|---|---|---|
-| **Standard** | `app.py` | Narrates the final report only | `phi` (Phi-2) |
-| **AI-Enhanced** | `app-ai.py` | Reasons over all evidence at fusion stage, produces per-category scores | `phi3:mini` |
+A multimodal cyber forensics tool that detects AI-generated, deepfaked, or manipulated media using a combination of computer vision, signal processing, and a local LLM (Phi-3 Mini) for report generation.
 
 ---
 
-## 🏛️ System Architecture
+## How It Works
 
-### Standard Mode (`app.py`)
 ```
-Upload/URL → Threat Scan → Heuristic Engines → Score Averaging (fusion/engine.py)
-          → phi narrates 3-stage report → PDF Export
+Upload Media → Analyze (ViT + Signal Processing) → Fuse Scores → Phi-3 Explains → PDF Report
 ```
 
-### AI-Enhanced Mode (`app-ai.py`)
-```
-Upload/URL → Threat Scan → Heuristic Engines → Full Evidence Dict
-          → phi3:mini reasons over all evidence (fusion/engine_ai.py)
-          → Structured JSON Verdict { threat_score, ai_generated_score, manipulation_score }
-          → phi3:mini narrates 3-stage report → PDF Export
-```
-
-### Heuristic Engines (`modules/`)
-- **`threats.py`** — Binary scans: magic bytes, polyglot shells, steganography payloads
-- **`image.py` & `metadata.py`** — Error Level Analysis (ELA), EXIF inspection, blur detection
-- **`video.py`** — Frame-level temporal analysis, optical flow, silent track detection
-- **`audio.py`** — MFCC, spectral flatness, SNR — catches TTS / cloned voice
-- **`url.py`** — Domain entropy, lexical phishing heuristics
-
-### Module Map
-```
-llm/
-  phi2.py          ← Standard: generate_ai_explanation(modality_data)
-  phi2_ai.py       ← AI-Enhanced: llm_reason_verdict() + generate_ai_explanation(verdict, evidence)
-
-fusion/
-  engine.py        ← Standard: simple score averaging
-  engine_ai.py     ← AI-Enhanced: LLM-powered structured verdict
-```
+1. **Image**: ViT transformer + Error Level Analysis detects AI generation and editing
+2. **Audio**: Pitch, MFCC, and spectral analysis catches synthetic/TTS voices
+3. **Video**: Frame-level AI detection + SSIM consistency + audio + metadata
+4. **URL**: Entropy, homograph, and DGA analysis for phishing detection
+5. **Fusion Engine**: Mathematical weighted formula makes the final verdict
+6. **Phi-3 Mini**: Local LLM writes the forensic explanation (no cloud, no API)
 
 ---
 
-## 🎯 Use Cases
-- **SOC / Incident Response** — Triage media files for embedded payloads disguised as JPEGs or MP4s
-- **Journalism / Fact-Checking** — Detect whether viral footage is authentic or AI-synthesized
-- **Academic Showcase** — Live demonstration of multi-modal forensic heuristics
-
----
-
-## 🚀 Quick Start
-
-> Full installation steps → [setup.md](setup.md) | Architecture details → [arc.md](arc.md)
+## Quick Start
 
 ```bash
-git clone https://github.com/GTM-05/TrueSight.git
-cd TrueSight
-python3 -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+# 1. Clone
+git clone https://github.com/GTM-05/TrueSight.git && cd TrueSight
+
+# 2. Install system tools
+sudo apt install ffmpeg -y
+
+# 3. Install AI brain
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull phi3:mini
+
+# 4. Python setup
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Standard mode (phi model)
-ollama pull phi
+# 5. Launch
+ollama serve &
 streamlit run app.py
-
-# AI-Enhanced mode (phi3:mini — ~2.3GB download)
-ollama pull phi3:mini
-streamlit run app-ai.py
 ```
 
 ---
 
-## 📊 Expected Test Results
+## System Requirements
 
-Upload the sample files from `test_samples/` to validate each engine:
-
-| File Type | Human Sample | AI/Fake Sample |
+| Component | Minimum | Recommended |
 |---|---|---|
-| Audio | ~20% (Low Risk) | ~75% (High Risk) |
-| Image | Low ELA variance, rich EXIF | Zero EXIF, uniform ELA, 1024×1024 |
-| URL | — | High entropy, suspicious TLDs |
+| RAM | 4 GB | 8 GB+ |
+| CPU | 4-core | 6-core+ |
+| Storage | 5 GB | 10 GB |
+| Python | 3.10+ | 3.12+ |
+| OS | Ubuntu 22.04+ | Ubuntu 24.04 |
+
+---
+
+## Project Structure
+
+```
+TrueSight/
+├── app.py                  ← Main UI (single entry point)
+├── modules/
+│   ├── image.py            ← ViT + ELA + EXIF
+│   ├── audio.py            ← Pitch + MFCC + Spectral
+│   ├── video.py            ← Frame AI + SSIM + ffprobe
+│   ├── url.py              ← Entropy + Homograph + DGA
+│   ├── metadata.py         ← EXIF + video container tags
+│   └── threats.py          ← Malware signature scan
+├── fusion/
+│   └── engine.py           ← Weighted decision (pure maths)
+├── llm/
+│   └── phi3.py             ← Phi-3 Mini explanation layer
+├── reports/
+│   └── generator.py        ← PDF dossier generator
+├── code.md                 ← Full code flow reference
+├── arc.md                  ← Architecture diagrams
+├── project.md              ← Project reference + scoring tables
+└── setup.md                ← Detailed setup guide
+```
+
+---
+
+## Documentation
+
+| File | Purpose |
+|---|---|
+| [`code.md`](code.md) | Explains every file's logic and data flow |
+| [`arc.md`](arc.md) | Architecture diagrams and weight justification |
+| [`project.md`](project.md) | Scoring thresholds and design decisions |
+| [`setup.md`](setup.md) | Step-by-step installation guide |
