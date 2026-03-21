@@ -45,42 +45,76 @@ We use different types of AI because a single model can't do everything:
 
 ---
 
-## 📂 4. Module-by-Module Breakdown
+## 🛠️ 5. Technical Implementation & Coding Patterns
 
-Here is what each folder in the project does:
+For the developers and technical investigators, here is how the code is actually built:
 
-### 📁 `modules/` (The Detectors)
--   **`image_ai.py`**: Runs the ViT Model to catch AI-generated images.
--   **`audio_ai.py`**: Analyzes the "vibe" of audio to catch cloned voices.
--   **`video_ai.py`**: Breaks video into frames and checks each one for AI-generation.
--   **`url_ai.py`**: Checks if a web link is trying to trick you (e.g., "paypa1.com").
--   **`metadata.py`**: Inspects "hidden data" (EXIF) to see which camera took the photo.
--   **`threats.py`**: A digital "baggage scanner" that looks for malware hidden inside files.
+### 🐍 The Python Core
+-   **Framework**: We use **Streamlit** for the frontend because it allows for rapid development of data-heavy interfaces without the overhead of JavaScript frameworks.
+-   **State Management**: We use `st.session_state` to keep your analysis results persistent as you move between tabs (Video vs. Image vs. URL).
+-   **Concurrency**: While the UI is single-threaded, the heavy ML processing happens in block-level executions to keep the interface responsive.
 
-### 📁 `fusion/` (The Decision Maker)
--   **`engine_ai.py`**: Collects all the results from the modules above and prepares them for the LLM.
+### 🖼️ Image & Video (Computer Vision)
+-   **Library**: `OpenCV` (cv2) and `Pillow` (PIL).
+-   **ELA Logic**: We re-save the image at 90% quality, then use `np.abs` to calculate the pixel-by-pixel difference. High "noise" in the difference map suggests the area was edited.
+-   **ViT Detection**: We use the `transformers` pipeline to load a **Vision Transformer**. This model maps the image into a high-dimensional space to find "synthetic artifacts" that are invisible to the naked eye.
+-   **Temporal Analysis (SSIM)**: In video, we compare frame $N$ with frame $N+1$ using the **Structural Similarity Index**. If the SSIM "std dev" is too high, it means the video has unnatural frame transitions—a common deepfake tell.
 
-### 📁 `llm/` (The Narrator)
--   **`phi2_ai.py`**: The bridge to Ollama. It tells the AI exactly how to write the forensic report.
+### 🔊 Audio (Digital Signal Processing)
+-   **Library**: `Librosa`.
+-   **Feature Engineering**: We don't just "listen." We extract:
+    -   **MFCCs**: Captures the "texture" of the voice.
+    -   **Pitch (PyIN)**: Checks for the robotic "flatness" of AI voices.
+    -   **Spectral Flatness**: Measures how "noisy" vs. "tonal" the sound is.
+-   **Anomaly Scoring**: We compare these features against thresholds derived from the WaveFake dataset.
 
-### 📁 `reports/` (The Final Product)
--   **`generator.py`**: Takes the AI's words and the module's scores and builds a professional **PDF Forensic Dossier**.
-
----
-
-## 🛠️ 5. The Forensic Pipeline (How a file is analyzed)
-
-1.  **Upload**: You drop a file into the Streamlit UI.
-2.  **Threat Scan**: Before analyzing for "AI," we check if the file is a virus (`threats.py`).
-3.  **Deeper Analysis**: The file goes to the Image, Audio, or Video module.
-4.  **Evidence Collection**: Scores and "reasons" (e.g., "Missing EXIF data") are gathered.
-5.  **AI Reasoning**: The data is sent to Ollama. The AI "thinks" and provides a verdict.
-6.  **Final Report**: You get a PDF with all the technical details and a high-level summary.
+### 🧠 LLM Orchestration
+-   **Temperature Control**: We set `temperature: 0.1` for the LLM. 
+    -   *Why?* We want the AI to be **deterministic**. It should give the same forensic verdict for the same data every time, not get "creative" with the facts.
+-   **Structured Output**: In `app-ai.py`, we force the LLM to think in **JSON**. This allows the Python code to pull out specific numbers (like "85% Threat Score") and show them in those nice big UI metrics.
 
 ---
 
-## 🛡️ 6. Why it's Secure
-TrueSight is **100% Offline**. 
-- Your images are never sent to a cloud.
-- The AI runs on your own computer via Ollama.
-- This is critical for forensics because you don't want to leak sensitive investigation data to a third-party company.
+## 🏗️ 6. Full Project Structure
+
+```text
+TrueSight/
+├── app.py                  # Standard UI (Heuristic Focused)
+├── app-ai.py               # AI-Enhanced UI (ML Focused)
+├── project.md              # This Master Guide
+├── setup.md                # Installation Manual
+├── arc.md                  # System Architecture Diagrams
+├── requirements.txt        # Python Dependencies
+├── modules/
+│   ├── image_ai.py         # ViT + ELA logic
+│   ├── audio_ai.py         # MFCC + Pitch logic
+│   ├── video_ai.py         # Frame sampling + SSIM logic
+│   ├── url_ai.py           # Phishing heuristics + TLD parsing
+│   ├── threats.py          # Malware & Steganography scanner
+│   └── metadata.py         # EXIF & Metadata parser
+├── fusion/
+│   ├── engine.py           # Simple scoring (Standard)
+│   └── engine_ai.py        # Evidence aggregator (AI-Enhanced)
+├── llm/
+│   ├── phi2.py             # phi-2 prompt engineering
+│   └── phi2_ai.py          # phi-3 mini structured reasoning
+└── reports/
+    └── generator.py        # ReportLab PDF building logic
+```
+
+---
+
+## 🚀 7. The Forensic Pipeline (How it works)
+
+1.  **Ingestion**: Streamlit handles the file upload/URL input.
+2.  **Pre-flight**: `threats.py` scans for embedded malware or steganography.
+3.  **Extraction**: Heuristic and ML modules extract numerical "features" (ELA, MFCC, AI-prob).
+4.  **Reasoning**: `engine_ai.py` bundles these features into a JSON "evidence bag" and sends it to `phi3:mini`.
+5.  **Verdict**: The LLM parses the evidence, assigns category scores, and writes the narrative.
+6.  **Documentation**: `generator.py` compiles everything into a "Clean & Neat" PDF report.
+
+---
+
+## 🛡️ 8. Why This Design Matters
+Cyber forensics requires **Privacy** and **Reproducibility**. 
+By staying **Offline-First**, TrueSight ensures that sensitive evidence never leaves your machine. By using **Deterministic AI**, it ensures that your investigation is scientific and repeatable.
