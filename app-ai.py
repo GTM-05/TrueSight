@@ -1,18 +1,19 @@
 """
-app-ai.py — TrueSight with LLM-powered fusion reasoning (phi3:mini).
+app-ai.py — TrueSight with AI-Enhanced Analysis + LLM Fusion (phi3:mini)
 
 Run with:  streamlit run app-ai.py
 
-The LLM (phi3:mini via Ollama) reasons over ALL raw forensic evidence at the
-fusion stage and produces structured per-category scores:
-  - Threat Score        (malware / steganography)
-  - AI-Generated Score  (likelihood content is fully AI-made)
-  - Manipulation Score  (deepfake / splicing / tampering)
+Differences from app.py (standard):
+  - modules/image_ai.py  → ViT AI-image-detector + ELA (catches Midjourney/DALL-E/SD)
+  - modules/audio_ai.py  → Pitch monotonicity, MFCC delta, energy consistency
+  - modules/video_ai.py  → Frame-level AI detection + SSIM temporal check
+  - modules/url_ai.py    → tldextract, homograph detection, DGA entropy, shorteners
+  - fusion/engine_ai.py  → phi3:mini reasons over full raw evidence (not just scores)
 
-Requires: ollama serve  +  ollama pull phi3:mini
-Falls back to simple averaging if Ollama is unavailable.
-
-For the original version (LLM only for report narration), run: streamlit run app.py
+Requires:
+  ollama serve   +   ollama pull phi3:mini
+  pip install transformers torch  (for ViT AI-image detection)
+Falls back gracefully if any optional dependency is missing.
 """
 
 import streamlit as st
@@ -21,11 +22,11 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from modules.url import analyze_url
-from modules.image import analyze_image
+from modules.url_ai import analyze_url_ai
+from modules.image_ai import analyze_image_ai
 from modules.metadata import check_metadata
-from modules.audio import analyze_audio
-from modules.video import analyze_video
+from modules.audio_ai import analyze_audio_ai
+from modules.video_ai import analyze_video_ai
 from fusion.engine_ai import generate_final_verdict_ai
 from modules.threats import scan_for_threats
 from llm.phi2_ai import generate_ai_explanation
@@ -33,32 +34,33 @@ from reports.generator import generate_pdf_report
 
 st.set_page_config(page_title="TrueSight AI · Deep Forensics", layout="wide")
 
-# Initialize session state
-if 'url_result' not in st.session_state:
-    st.session_state.url_result = None
-if 'image_result' not in st.session_state:
-    st.session_state.image_result = None
-if 'audio_result' not in st.session_state:
-    st.session_state.audio_result = None
-if 'video_result' not in st.session_state:
-    st.session_state.video_result = None
+# Session state
+for key in ['url_result', 'image_result', 'audio_result', 'video_result']:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
-st.title("🧠 TrueSight AI: LLM-Powered Forensics")
+st.title("🧠 TrueSight AI: ML-Powered Forensics")
 st.markdown(
-    "**Enhanced mode** — The LLM (phi3:mini) reasons over raw forensic evidence to produce "
-    "structured per-category risk verdicts. Analyze **Video, Image, Audio, and URL** inputs.\n\n"
-    "> For the standard version, run `streamlit run app.py`"
+    "**Enhanced mode** — Uses real ML models + advanced signal analysis for deeper accuracy.\n\n"
+    "| Module | Enhancement |\n"
+    "|---|---|\n"
+    "| 🖼️ Image | ViT AI-image-detector (catches Midjourney, DALL·E, Stable Diffusion) |\n"
+    "| 🔊 Audio | Pitch monotonicity + MFCC delta + energy consistency |\n"
+    "| 🎥 Video | Frame-level AI detection + SSIM temporal check |\n"
+    "| 🌐 URL | Homograph detection + shortener + DGA entropy + tldextract |\n\n"
+    "> For the standard version: `streamlit run app.py`"
 )
 
 tab1, tab2, tab3, tab4 = st.tabs(["🎥 Video Analysis", "🖼️ Image Analysis", "🔊 Audio Analysis", "🌐 URL Analysis"])
 
+# ── Tab 1: Video ──────────────────────────────────────────────────────────────
 with tab1:
-    st.header("Video Forensic Analysis")
-    st.write("Extracts frames and audio from a 10s video clip. AI analyzes heuristics to detect deepfakes.")
+    st.header("Video Forensic Analysis (AI-Enhanced)")
+    st.write("Frame-level AI-image detection + pitch/MFCC audio analysis + SSIM temporal consistency.")
     video_file = st.file_uploader("Upload a Video file", type=["mp4", "avi", "mov"])
     if video_file is not None:
         ext = os.path.splitext(video_file.name)[1]
-        temp_vid = "temp_video" + ext
+        temp_vid = "temp_video_ai" + ext
         with open(temp_vid, "wb") as f:
             f.write(video_file.getbuffer())
 
@@ -68,62 +70,96 @@ with tab1:
                 if threat_res['score'] > 0:
                     st.error(f"🚨 THREAT DETECTED: {threat_res['reasons'][0]}")
 
-            with st.spinner("Processing video frames, extracting audio..."):
-                vid_res = analyze_video(temp_vid)
+            with st.spinner("Running AI-enhanced frame & audio analysis (may take 20–40s)..."):
+                vid_res = analyze_video_ai(temp_vid)
                 vid_res['threats'] = threat_res
                 st.session_state.video_result = vid_res
 
                 st.subheader("Video Analysis Results")
-                st.metric("Video Manipulation Risk Score", f"{vid_res['score']}%")
-                if threat_res['score'] > 0:
-                    st.metric("Malware Threat Score", f"{threat_res['score']}%")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Manipulation Risk Score", f"{vid_res['score']}%")
+                with col2:
+                    st.metric("Frames Analyzed", vid_res.get('frames_analyzed', 0))
+                with col3:
+                    if threat_res['score'] > 0:
+                        st.metric("Malware Threat Score", f"{threat_res['score']}%")
+
+                if vid_res.get('ai_frame_scores'):
+                    avg_ai = sum(vid_res['ai_frame_scores']) / len(vid_res['ai_frame_scores'])
+                    st.info(f"🤖 Average frame AI-generation score: **{avg_ai:.0f}%**")
+
+                ssim = vid_res.get('ssim', {})
+                if ssim:
+                    st.caption(f"SSIM Temporal: mean={ssim.get('ssim_mean', 'N/A')}, "
+                               f"std={ssim.get('ssim_std', 'N/A')} "
+                               f"{'⚠️ Anomaly detected' if ssim.get('anomaly') else '✅ Normal'}")
 
                 if vid_res['reasons']:
-                    st.write("**Suspicious Indicators found:**")
+                    st.write("**Suspicious Indicators:**")
                     for reason in vid_res['reasons']:
                         st.warning(f"⚠️ {reason}")
                 else:
                     st.success("✅ No notable anomalies detected.")
 
+# ── Tab 2: Image ──────────────────────────────────────────────────────────────
 with tab2:
-    st.header("Image Forensic Analysis")
-    st.write("Uses Error Level Analysis (ELA) and Metadata extraction to detect manipulation.")
+    st.header("Image Forensic Analysis (AI-Enhanced)")
+    st.write("ViT AI-image-detector (Midjourney/DALL·E/SD detection) + ELA + EXIF analysis.")
     image_file = st.file_uploader("Upload an Image", type=["png", "jpg", "jpeg"])
     if image_file is not None:
-        with open("temp_img.jpg", "wb") as f:
+        with open("temp_img_ai.jpg", "wb") as f:
             f.write(image_file.getbuffer())
 
         if st.button("Run Image Analysis"):
             with st.spinner("Scanning for malware..."):
-                threat_res = scan_for_threats("temp_img.jpg")
+                threat_res = scan_for_threats("temp_img_ai.jpg")
                 if threat_res['score'] > 0:
                     st.error(f"🚨 THREAT DETECTED: {threat_res['reasons'][0]}")
 
-            with st.spinner("Analyzing image and extracting metadata..."):
-                img_res = analyze_image("temp_img.jpg")
-                meta_res = check_metadata("temp_img.jpg")
-                combined_score = (img_res['score'] + meta_res['score']) // 2
+            with st.spinner("Running ViT AI-image detector + ELA + metadata (may take 10–20s)..."):
+                img_res = analyze_image_ai("temp_img_ai.jpg")
+                meta_res = check_metadata("temp_img_ai.jpg")
 
-                # Store full evidence for LLM reasoning
+                # Weight towards AI-detection score if model was used
+                if img_res['metrics'].get('model_used'):
+                    combined_score = min(100, int(img_res['score'] * 0.7 + meta_res['score'] * 0.3))
+                else:
+                    combined_score = (img_res['score'] + meta_res['score']) // 2
+
                 st.session_state.image_result = {
                     'score': combined_score,
                     'visual_score': img_res['score'],
                     'meta_score': meta_res['score'],
                     'reasons': img_res['reasons'] + meta_res['reasons'],
                     'ela_metrics': img_res.get('metrics', {}),
+                    'ai_detection': img_res.get('ai_detection', {}),
                     'exif': meta_res.get('metadata', {}),
                     'ela_map': img_res.get('ela_map'),
                     'threats': threat_res,
                 }
 
                 st.subheader("Image Analysis Results")
-                st.metric("Manipulation Risk Score", f"{combined_score}%")
-                if threat_res['score'] > 0:
-                    st.metric("Malware Threat Score", f"{threat_res['score']}%")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Combined Risk Score", f"{combined_score}%")
+                with col2:
+                    ai_det = img_res.get('ai_detection', {})
+                    st.metric("🤖 AI-Generation Probability", f"{ai_det.get('ai_probability', 0)}%")
+                with col3:
+                    if threat_res['score'] > 0:
+                        st.metric("Malware Threat Score", f"{threat_res['score']}%")
+
+                model_used = img_res['metrics'].get('model_used', False)
+                ai_det = img_res.get('ai_detection', {})
+                if model_used:
+                    st.caption(f"🤖 Model: {ai_det.get('method', 'N/A')} | Label: **{ai_det.get('label', 'N/A')}**")
+                else:
+                    st.caption(f"⚠️ ML model not loaded — using heuristic fallback | {ai_det.get('method', '')}")
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.write("**Visual Forensics (ELA & Blur)**")
+                    st.write("**Visual + AI Detection**")
                     for reason in img_res['reasons']:
                         st.warning(f"⚠️ {reason}")
                     if not img_res['reasons']:
@@ -140,22 +176,24 @@ with tab2:
                     with st.expander("View Raw EXIF Data"):
                         st.json(meta_res['metadata'])
 
+# ── Tab 3: Audio ──────────────────────────────────────────────────────────────
 with tab3:
-    st.header("Audio Forensic Analysis")
-    st.write("Extracts MFCCs and spectral features to detect synthetic or deepfake audio.")
+    st.header("Audio Forensic Analysis (AI-Enhanced)")
+    st.write("Pitch monotonicity, MFCC delta smoothness, and energy consistency analysis.")
     audio_file = st.file_uploader("Upload an Audio file", type=["wav", "mp3"])
     if audio_file is not None:
         ext = os.path.splitext(audio_file.name)[1]
-        with open("temp_audio" + ext, "wb") as f:
+        with open("temp_audio_ai" + ext, "wb") as f:
             f.write(audio_file.getbuffer())
 
         if st.button("Run Audio Analysis"):
             with st.spinner("Scanning for malware..."):
-                threat_res = scan_for_threats("temp_audio" + ext)
+                threat_res = scan_for_threats("temp_audio_ai" + ext)
                 if threat_res['score'] > 0:
                     st.error(f"🚨 THREAT DETECTED: {threat_res['reasons'][0]}")
-            with st.spinner("Extracting acoustic features..."):
-                aud_res = analyze_audio("temp_audio" + ext)
+
+            with st.spinner("Extracting pitch, MFCC delta, energy patterns..."):
+                aud_res = analyze_audio_ai("temp_audio_ai" + ext)
 
                 st.session_state.audio_result = {
                     'score': aud_res['score'],
@@ -165,9 +203,21 @@ with tab3:
                 }
 
                 st.subheader("Audio Analysis Results")
-                st.metric("Synthetic Audio Risk Score", f"{aud_res['score']}%")
-                if threat_res['score'] > 0:
-                    st.metric("Malware Threat Score", f"{threat_res['score']}%")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Synthetic Audio Risk Score", f"{aud_res['score']}%")
+                with col2:
+                    if threat_res['score'] > 0:
+                        st.metric("Malware Threat Score", f"{threat_res['score']}%")
+
+                metrics = aud_res.get('metrics', {})
+                if metrics:
+                    st.caption(
+                        f"Pitch std: {metrics.get('pitch_std', 0):.1f} Hz | "
+                        f"MFCC delta std: {metrics.get('mfcc_delta_std', 0):.2f} | "
+                        f"RMS std: {metrics.get('rms_std', 0):.4f} | "
+                        f"Voiced ratio: {metrics.get('voiced_ratio', 0):.2f}"
+                    )
 
                 if aud_res['reasons']:
                     st.write("**Suspicious Acoustic Indicators:**")
@@ -176,17 +226,18 @@ with tab3:
                 else:
                     st.success("✅ No acoustic anomalies detected.")
 
-                with st.expander("View Acoustic Metrics"):
-                    st.json(aud_res['metrics'])
+                with st.expander("View Full Acoustic Metrics"):
+                    st.json(aud_res.get('metrics', {}))
 
+# ── Tab 4: URL ────────────────────────────────────────────────────────────────
 with tab4:
-    st.header("URL Phishing Detection")
-    st.write("Uses lexical heuristics and offline feature tracking to detect phishing URLs.")
+    st.header("URL Analysis (AI-Enhanced)")
+    st.write("Homograph detection, DGA entropy, URL shortener, deep subdomain nesting, and more.")
     url_input = st.text_input("Enter a URL to analyze")
     if st.button("Analyze URL"):
         if url_input:
-            with st.spinner(f"Analyzing {url_input}..."):
-                result = analyze_url(url_input)
+            with st.spinner(f"Deep-analyzing {url_input}..."):
+                result = analyze_url_ai(url_input)
 
                 st.session_state.url_result = {
                     'score': result['score'],
@@ -200,30 +251,39 @@ with tab4:
                     st.metric("Phishing Risk Score", f"{result['score']}%")
                 with col2:
                     if result['risk_level'] == 'High':
-                        st.error(f"Risk Level: {result['risk_level']}")
+                        st.error(f"Risk Level: 🔴 {result['risk_level']}")
                     elif result['risk_level'] == 'Medium':
-                        st.warning(f"Risk Level: {result['risk_level']}")
+                        st.warning(f"Risk Level: 🟡 {result['risk_level']}")
                     else:
-                        st.success(f"Risk Level: {result['risk_level']}")
+                        st.success(f"Risk Level: 🟢 {result['risk_level']}")
+
+                feats = result.get('features', {})
+                st.caption(
+                    f"Domain: **{feats.get('domain', 'N/A')}** | "
+                    f"TLD: **.{feats.get('tld', 'N/A')}** | "
+                    f"Entropy: {feats.get('domain_entropy', 0)} | "
+                    f"Subdomain depth: {feats.get('subdomain_depth', 0)}"
+                )
 
                 if result['reasons']:
-                    st.write("**Suspicious Indicators found:**")
+                    st.write("**Suspicious Indicators:**")
                     for reason in result['reasons']:
                         st.warning(f"⚠️ {reason}")
                 else:
                     st.success("✅ No suspicious indicators found.")
 
-                with st.expander("View Raw Feature Data"):
+                with st.expander("View Full Feature Analysis"):
                     st.json(result['features'])
         else:
             st.error("Please enter a URL first.")
 
+# ── Final Report ──────────────────────────────────────────────────────────────
 st.divider()
 st.subheader("Results & Reporting")
-st.caption("🧠 phi3:mini will reason over ALL raw evidence to produce per-category scores before generating the report.")
+st.caption("🧠 phi3:mini will reason over ALL raw forensic evidence to produce per-category risk scores.")
 
 if st.button("Generate Final Forensic Report (AI-Powered)", type="primary"):
-    with st.spinner("LLM reasoning over full forensic evidence — this may take 30–60 seconds..."):
+    with st.spinner("LLM reasoning over full evidence — may take 30–60 seconds..."):
         all_evidence = {}
         if st.session_state.url_result:
             all_evidence['URL'] = st.session_state.url_result
@@ -235,12 +295,10 @@ if st.button("Generate Final Forensic Report (AI-Powered)", type="primary"):
             all_evidence['Video'] = st.session_state.video_result
 
         if not all_evidence:
-            st.error("No data has been analyzed yet. Please run at least one analysis first.")
+            st.error("No data analyzed yet. Run at least one analysis first.")
         else:
-            # LLM reasons over ALL evidence → structured JSON verdict
             verdict = generate_final_verdict_ai(all_evidence)
 
-            # 4-column metric breakdown
             st.subheader("🧠 LLM-Reasoned Risk Breakdown")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -268,7 +326,7 @@ if st.button("Generate Final Forensic Report (AI-Powered)", type="primary"):
                     for finding in key_findings:
                         st.markdown(f"- {finding}")
 
-            with st.spinner("Generating 3-stage AI investigator narrative..."):
+            with st.spinner("Generating 3-stage investigator narrative..."):
                 ai_explanation = generate_ai_explanation(verdict, all_evidence)
 
             report_data = {
@@ -289,10 +347,12 @@ if st.button("Generate Final Forensic Report (AI-Powered)", type="primary"):
             }
 
             pdf_path = generate_pdf_report(report_data)
-
             st.success("Report Generated Successfully!")
             st.info(f"**AI Investigator Report:**\n\n{ai_explanation}")
 
             if pdf_path and os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as f:
-                    st.download_button("Download PDF Report", f, file_name="Forensic_AI_Report.pdf", mime="application/pdf")
+                    st.download_button(
+                        "Download PDF Report", f,
+                        file_name="Forensic_AI_Report.pdf", mime="application/pdf"
+                    )
