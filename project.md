@@ -34,6 +34,15 @@ We use different types of AI because a single model can't do everything:
 -   **Signal Processing (Librosa)**: This is our **Audio AI**. It knows that human voices have "noise" and "jitter," while AI voices are often "too perfect" or "monotone."
 -   **Ollama (phi3:mini)**: This is our **Reasoning AI**. It doesn't look at the image; it reads the *data* about the image and decides if the combined evidence is enough to call it a "High Risk."
 
+### 📂 Quick Reference: Model & Modality Map
+
+| Category | Model / Technology | Where it "Lives" |
+|---|---|---|
+| **🧠 Language** | `phi` and `phi3:mini` | **Ollama** (Shows in `ollama list`) |
+| **👁️ Vision** | `ViT` (Vision Transformer) | **Python Libraries** (HuggingFace `transformers` & `torch`) |
+| **👂 Audio** | `Acoustic Signal Models` | **Python Libraries** (`librosa`) |
+| **📁 Files/Links** | `Heuristic Binary Engines` | **Heuristics** (Custom code in `TrueSight/modules`) |
+
 ---
 
 ## 📂 4. Module-by-Module Breakdown
