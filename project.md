@@ -1,7 +1,7 @@
 # TrueSight — Project Reference
 
 ## Overview
-TrueSight is a **local, offline AI-powered cyber forensics tool** for detecting AI-generated, manipulated, or suspicious media. It runs entirely on-device using Phi-3 Mini via Ollama.
+TrueSight is a **local, offline AI-powered cyber forensics tool** for detecting AI-generated, manipulated, or suspicious media. It runs entirely on-device using Qwen2 (0.5B) via Ollama.
 
 ---
 
@@ -30,7 +30,7 @@ Media Input
               📄 PDF Report Download
 ```
 
-> **Key Rule**: The LLM **never makes the verdict**. The Fusion Engine makes the decision; Phi-3 only writes the explanation.
+> **Key Rule**: The LLM **never makes the verdict**. The Fusion Engine makes the decision; Qwen2 only writes the explanation.
 
 ---
 
@@ -39,14 +39,14 @@ Media Input
 | File | Role | Techniques |
 |---|---|---|
 | `app.py` | UI + orchestration | Streamlit |
-| `modules/image.py` | Image forensics | ViT (`jacoballessio/ai-image-detect-distilled`), ELA, EXIF |
+| `modules/image.py` | Image forensics | ViT (`prithivMLmods/Deep-Fake-Detector-Model`), ELA, EXIF |
 | `modules/audio.py` | Audio forensics | Pitch std, MFCC delta, RMS energy, spectral centroid/rolloff/flatness |
-| `modules/video.py` | Video forensics | Frame ViT, SSIM consistency, ffmpeg audio, ffprobe metadata |
+| `modules/video.py` | Video forensics | Frame ViT, SSIM consistency, Optical Flow Anomaly, ffprobe metadata |
 | `modules/url.py` | URL forensics | Shannon entropy, homograph detection, DGA, shortener heuristics |
 | `modules/metadata.py` | EXIF + video tags | exifread, ffprobe JSON |
 | `modules/threats.py` | Malware scan | File signature, entropy, extension mismatch |
 | `fusion/engine.py` | **Decision Layer** | Weighted formula + confidence computation |
-| `llm/phi3.py` | **Explanation Layer** | Phi-3 Mini via Ollama |
+| `llm/llm.py` | **Explanation Layer** | Qwen2 (0.5B) via Ollama |
 | `reports/generator.py` | PDF export | reportlab |
 
 ---
@@ -104,11 +104,11 @@ opencv-python     — Frame extraction (replaces MoviePy)
 exifread          — EXIF metadata parsing
 tldextract        — URL domain parsing
 reportlab         — PDF generation
-ollama            — Phi-3 Mini inference client
+ollama            — Qwen2 (0.5B) inference client
 ```
 
 ### System Tools Required
 ```bash
 sudo apt install ffmpeg   # Audio extraction + video metadata (ffprobe included)
-ollama pull phi3:mini     # LLM explanation layer
+ollama pull qwen2:0.5b    # LLM explanation layer (Lite)
 ```

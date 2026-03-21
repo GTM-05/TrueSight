@@ -2,14 +2,14 @@
 
 > **Local. Private. AI-Powered.** No data ever leaves your machine.
 
-A multimodal cyber forensics tool that detects AI-generated, deepfaked, or manipulated media using a combination of computer vision, signal processing, and a local LLM (Phi-3 Mini) for report generation.
+A multimodal cyber forensics tool that detects AI-generated, deepfaked, or manipulated media using a combination of computer vision, signal processing, and a local LLM (Qwen2 0.5B) for report generation.
 
 ---
 
 ## How It Works
 
 ```
-Upload Media → Analyze (ViT + Signal Processing) → Fuse Scores → Phi-3 Explains → PDF Report
+Upload Media → Analyze (ViT + Signal Processing) → Fuse Scores → Qwen2 Explains → PDF Report
 ```
 
 1. **Image**: ViT transformer + Error Level Analysis detects AI generation and editing
@@ -17,7 +17,7 @@ Upload Media → Analyze (ViT + Signal Processing) → Fuse Scores → Phi-3 Exp
 3. **Video**: Frame-level AI detection + SSIM consistency + audio + metadata
 4. **URL**: Entropy, homograph, and DGA analysis for phishing detection
 5. **Fusion Engine**: Mathematical weighted formula makes the final verdict
-6. **Phi-3 Mini**: Local LLM writes the forensic explanation (no cloud, no API)
+6. **Qwen2 (0.5B)**: Local LLM writes the forensic explanation (no cloud, no API)
 
 ---
 
@@ -32,7 +32,7 @@ sudo apt install ffmpeg -y
 
 # 3. Install AI brain
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull phi3:mini
+ollama pull qwen2:0.5b
 
 # 4. Python setup
 python3 -m venv venv && source venv/bin/activate
@@ -72,7 +72,7 @@ TrueSight/
 ├── fusion/
 │   └── engine.py           ← Weighted decision (pure maths)
 ├── llm/
-│   └── phi3.py             ← Phi-3 Mini explanation layer
+│   └── llm.py              ← Qwen2 explanation layer
 ├── reports/
 │   └── generator.py        ← PDF dossier generator
 ├── code.md                 ← Full code flow reference

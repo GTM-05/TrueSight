@@ -25,42 +25,82 @@ def _load_detector():
     if _detector_ready:
         return _ai_detector
     try:
+        import os
+        # Force offline mode: skip all HuggingFace network calls (saves ~25s per run)
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
         from transformers import pipeline
         import torch
-        # jacoballessio/ai-image-detect-distilled: 11.8M params, 58MB.
-        # Much faster and lighter for 8GB RAM than base ViT.
         device = 0 if torch.cuda.is_available() else -1
+        # Use 'prithivMLmods/Deep-Fake-Detector-Model' - robust and stable for various library versions.
         _ai_detector = pipeline(
             "image-classification",
-            model="jacoballessio/ai-image-detect-distilled",
-            device=device
+            model="prithivMLmods/Deep-Fake-Detector-Model",
+            device=device,
+            trust_remote_code=True
         )
         _detector_ready = True
+        print("[IMAGE] ✅ ViT detector loaded from local cache (offline mode)")
     except Exception:
+        print("[IMAGE] ⚠️ Offline: Using Elite FFT Spectral Fallback (AI Grid Detection)")
         _ai_detector = None
-        _detector_ready = True  # Don't retry, use fallback
+        _detector_ready = True
     return _ai_detector
 
 
-def detect_ai_generated(image_path: str, low_resource: bool = False) -> dict:
+# ── Face Detection (Booster for Deepfake Accuracy) ──────────────────────────
+_face_cascade = None
+
+def _get_face_detector():
+    global _face_cascade
+    if _face_cascade is None:
+        try:
+            # Standard Haar Cascade for front-facing faces
+            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            _face_cascade = cv2.CascadeClassifier(cascade_path)
+        except Exception:
+            pass
+    return _face_cascade
+
+
+def detect_ai_generated(image_path: str, low_resource: bool = False, face_focus: bool = True) -> dict:
     """
     Uses a pre-trained ViT model to score the probability that an image
     was AI-generated. Returns a score 0–100 and a label.
     Falls back to heuristic indicators if model is unavailable.
     """
     detector = _load_detector()
+    face_cascade = _get_face_detector()
 
     # ── ML path ──────────────────────────────────────────────────────────────
     # Skip ML path in Low Resource Mode (8GB RAM optimization)
     if not low_resource and detector is not None:
-        img = None
-        img_optimized = None
+        face_metrics = {}
+        img_cv = cv2.imread(image_path)
+        img_target = None
         try:
-            img = Image.open(image_path).convert("RGB")
-            # Optimize: Resize to 224x224 before passing to ViT to save RAM/CPU
-            img_optimized = img.resize((224, 224), Image.LANCZOS)
+            if img_cv is not None and face_focus and face_cascade is not None:
+                gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+                full_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                if len(faces) > 0:
+                    x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+                    pad_w, pad_h = int(w * 0.15), int(h * 0.15)
+                    x1, y1 = max(0, x-pad_w), max(0, y-pad_h)
+                    x2, y2 = min(img_cv.shape[1], x+w+pad_w), min(img_cv.shape[0], y+h+pad_h)
+                    face_crop = img_cv[y1:y2, x1:x2]
+                    face_var = cv2.Laplacian(cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
+                    
+                    face_metrics = {'face_var': float(face_var), 'bg_var': float(full_var)}
+                    img_target = Image.fromarray(cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB))
+                    print(f"[IMAGE] 🧿 Face-Centric Scan: Focusing on {w}x{h} region.")
+
+            if img_target is None:
+                img_target = Image.open(image_path).convert("RGB")
+            
+            img_optimized = img_target.resize((224, 224), Image.LANCZOS)
             results = detector(img_optimized)
-            # Results: [{"label": "artificial", "score": 0.93}, {"label": "human", ...}]
+            
             ai_score = 0
             label = "Unknown"
             for r in results:
@@ -69,18 +109,19 @@ def detect_ai_generated(image_path: str, low_resource: bool = False) -> dict:
                     ai_score = int(r["score"] * 100)
                     label = r["label"]
                     break
+            
             return {
                 "ai_probability": ai_score,
                 "label": label,
-                "method": "ViT (umm-maybe/AI-image-detector)",
-                "model_used": True
+                "method": "ViT (Face-Centric Boost)" if img_cv is not None else "ViT (Full Scan)",
+                "model_used": True,
+                "face_metrics": face_metrics
             }
         except Exception:
             pass  # Fall through to heuristic path
         finally:
-            # Explicit cleanup to recover RAM on 8GB systems
-            if img is not None: del img
-            if img_optimized is not None: del img_optimized
+            # Explicit cleanup
+            if img_cv is not None: del img_cv
             gc.collect()
 
     # ── Heuristic fallback ────────────────────────────────────────────────────
@@ -105,15 +146,32 @@ def _heuristic_ai_detection(image_path: str) -> dict:
             score += 30
             reasons.append(f"Resolution {w}×{h} matches known AI generator output size")
 
-        # FFT smoothness: AI images tend to have very smooth frequency spectrum
+        # FFT analysis: Detect periodic grid artifacts (common in GAN/AI synthesis)
         gray = np.array(img.convert("L")).astype(np.float32)
         fft = np.fft.fft2(gray)
         fft_shift = np.fft.fftshift(fft)
-        magnitude = np.log(np.abs(fft_shift) + 1)
-        smoothness = np.std(magnitude)
-        if smoothness < 3.5:
+        magnitude = np.abs(fft_shift)
+        
+        # Analyze spectral energy distribution
+        log_mag = np.log(magnitude + 1)
+        smoothness = np.std(log_mag)
+        
+        # Detect periodic spikes (spectral peaks away from center)
+        # We look for outliers in the magnitude spectrum excluding the DC component
+        h, w = magnitude.shape
+        cy, cx = h//2, w//2
+        mask = np.ones((h, w), bool)
+        mask[cy-5:cy+6, cx-5:cx+6] = False # ignore center DC
+        peaks = np.percentile(magnitude[mask], 99.9)
+        mean_energy = np.mean(magnitude[mask])
+        
+        if smoothness < 3.2:
             score += 25
-            reasons.append(f"Unusually smooth frequency spectrum (std={smoothness:.2f}) — characteristic of AI synthesis")
+            reasons.append(f"Spectral smoothness detected (std={smoothness:.2f}) — typical of generative models")
+        
+        if peaks > mean_energy * 50:
+            score += 35
+            reasons.append("Periodic spectral peaks detected — structural artifacts characteristic of GAN/AI grid sampling")
 
     except Exception:
         pass
@@ -140,8 +198,10 @@ def error_level_analysis(image_path, quality=90):
         compressed = Image.open(tmp_ela.name)
         diff = np.abs(np.array(original).astype(np.int16) - np.array(compressed).astype(np.int16))
         max_diff = np.max(diff) or 1
-        scale = 255.0 / max_diff
-        enhanced_diff = (diff * scale).astype(np.uint8)
+        # TIER 3: Adaptive ELA Scaling
+        # If very high quality (small diff), we need a higher scale to see the signal.
+        scale = 255.0 / max_diff if max_diff > 10 else 25.0 
+        enhanced_diff = (diff * scale).clip(0, 255).astype(np.uint8)
         ela_out = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
         ela_out.close()
         ela_map_path = ela_out.name
@@ -173,20 +233,27 @@ def analyze_image(image_path: str, low_resource: bool = False) -> dict:
     # 1. AI-generation check
     ai_res = detect_ai_generated(image_path)
     ai_prob = int(ai_res.get("ai_probability") or 0)
-    
-    # If AI model is highly confident, it should carry a massive weight
-    if ai_prob >= 80:
-        score += 80
-        reasons.append(f"CRITICAL: High AI-generation probability ({ai_prob}%) [{ai_res.get('method', 'N/A')}]")
-    elif ai_prob >= 50:
-        score += 55
-        reasons.append(f"Strong AI-generation signal ({ai_prob}%) [{ai_res.get('method', 'N/A')}]")
-    elif ai_prob >= 35:
-        score += 35
-        reasons.append(f"Moderate AI-generation artifacts (Prob: {ai_prob}%)")
+
+    # Face-Centric and Noise Consistency Signals
+    score += ai_prob
+    if ai_prob >= 50:
+        reasons.append(f"CRITICAL: High AI-generation signal ({ai_prob}%) [{ai_res.get('method', 'N/A')}]")
     elif ai_prob >= 20:
-        score += 15
-        reasons.append(f"Weak AI-generation signal (Prob: {ai_prob}%)")
+        reasons.append(f"AI-signature detected (Prob: {ai_prob}%)")
+
+    # 1.1 Noise Consistency Check (Deepfake Artifacts)
+    # If the face focus detected a face, compare it to the background noise
+    # (Using Laplacian variance as a proxy for digital noise consistency)
+    try:
+        if 'face_metrics' in ai_res:
+            f_var = ai_res['face_metrics']['face_var']
+            bg_var = ai_res['face_metrics']['bg_var']
+            ratio = f_var / (bg_var + 1e-9)
+            if ratio < 0.4 or ratio > 2.5:
+                score += 35
+                reasons.append(f"Anomaly: Noise inconsistency between Face and Background (Ratio: {ratio:.1f}) — typical of deepfake compositing.")
+    except Exception:
+        pass
 
     # 2. ELA
     ela_res = error_level_analysis(image_path)

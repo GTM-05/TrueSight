@@ -14,8 +14,8 @@
      ┌────────────────┐ ┌───────────────┐ ┌────────────────┐
      │ modules/image  │ │ modules/audio │ │ modules/video  │
      │ ViT + ELA      │ │ Pitch + MFCC  │ │ ViT + SSIM     │
-     │ EXIF metadata  │ │ Spectral feat │ │ ffmpeg + ffprobe│
-     └───────┬────────┘ └──────┬────────┘ └───────┬────────┘
+     │ Laplacian Noise│ │ Spectral feat │ │ Optical Flow   │
+     └───────┬────────┘ └──────┬────────┘ └───────-┬───────┘
              │                 │                   │
              └─────────────────┼───────────────────┘
                                │ scored 0–100
@@ -29,8 +29,8 @@
                                │ numeric verdict
                                ▼
                   ┌────────────────────────┐
-                  │      llm/phi3.py       │  ← Explanation Layer
-                  │  Phi-3 Mini (Ollama)   │  (words only, no decision)
+                  │       llm/llm.py       │  ← Explanation Layer
+                  │  Qwen2 (0.5B - Ollama) │  (words only, no decision)
                   │  Generates narrative   │
                   └────────────┬───────────┘
                                │
@@ -47,9 +47,9 @@
 
 | Module | Primary Signal | Secondary Signal |
 |---|---|---|
-| `image.py` | ViT AI-image-detector (transformer) | ELA compression artifacts |
-| `audio.py` | Pitch monotonicity | MFCC delta smoothness + spectral flatness |
-| `video.py` | Per-frame ViT score | SSIM temporal consistency + ffprobe metadata |
+| `image.py` | ViT (prithivMLmods/Deep-Fake) | ELA + Laplacian Noise |
+| `audio.py` | Pitch monotonicity | MFCC delta + Spectral Flatness |
+| `video.py` | Per-frame ViT score | SSIM + Optical Flow Anomaly |
 | `url.py` | Shannon entropy | Homograph + DGA + shortener detection |
 | `threats.py` | MIME ≠ extension | High entropy (packed malware signature) |
 | `metadata.py` | EXIF software tag | ffprobe format tags + creation time |
@@ -88,5 +88,5 @@ neither available                → visual takes 1.0 full weight
 | Explicit `gc.collect()` | `image.py` | Frees RAM after each image |
 | `sr=None` in librosa | `audio.py` | No resampling CPU overhead |
 | OpenCV frame extraction | `video.py` | No full video RAM load |
-| `num_predict=400` | `phi3.py` | Caps LLM response tokens |
-| `temperature=0.1` | `phi3.py` | Fast, deterministic output |
+| `num_predict=400` | `llm.py` | Caps LLM response tokens |
+| `temperature=0.1` | `llm.py` | Fast, deterministic output |

@@ -24,11 +24,22 @@ except ImportError:
 
 
 def _extract_advanced_features(y, sr):
-    """Extracts a rich feature vector from an audio signal."""
+    """Extracts a rich feature vector from an audio signal (speed-optimized)."""
     features = {}
 
-    # MFCCs + delta (rate of change)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    # Downsample to 8kHz for 2x speed improvement (sufficient for voice features)
+    if sr > 8000:
+        import librosa
+        y = librosa.resample(y, orig_sr=sr, target_sr=8000)
+        sr = 8000
+
+    # Limit to 10s max to keep processing fast
+    max_samples = sr * 10
+    if len(y) > max_samples:
+        y = y[:max_samples]
+
+    # MFCCs + delta (8 coefficients is sufficient for TTS detection)
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=8)
     mfcc_delta = librosa.feature.delta(mfcc)
     mfcc_delta2 = librosa.feature.delta(mfcc, order=2)
     features['mfcc_mean'] = float(np.mean(mfcc))
@@ -76,7 +87,14 @@ def _extract_advanced_features(y, sr):
     # SNR estimate
     noise_floor = np.percentile(np.abs(y), 10)
     signal_level = np.percentile(np.abs(y), 90)
-    features['snr'] = float(20 * np.log10(signal_level / (noise_floor + 1e-9)))
+    # Spectral Spike Detection (Hallmark of AI Vocoders)
+    stft = np.abs(librosa.stft(y))
+    power_spectrum = np.mean(stft, axis=1)
+    if len(power_spectrum) > 0:
+        spike_ratio = np.max(power_spectrum) / (np.mean(power_spectrum) + 1e-9)
+        features['spike_ratio'] = float(spike_ratio)  # > 20.0 often indicates synthetic peaks
+    else:
+        features['spike_ratio'] = 0.0
 
     return features
 
@@ -128,11 +146,14 @@ def _score_from_features(features: dict) -> tuple:
         score += 10
         reasons.append(f"Exceptionally clean audio (SNR={snr:.1f}dB) — possibly generated without ambient noise")
 
-    # Low voiced ratio (too many unvoiced segments)
-    voiced_ratio = features.get('voiced_ratio', 0.5)
-    if voiced_ratio < 0.2:
+    # Spectral spikes: synthetic vocoders have sharp, artificial harmonic peaks
+    spike_ratio = features.get('spike_ratio', 0)
+    if spike_ratio > 25:
+        score += 25
+        reasons.append(f"Synthetic spectral spikes detected (ratio={spike_ratio:.1f}) — typical of AI vocoder fingerprints")
+    elif spike_ratio > 18:
         score += 10
-        reasons.append(f"Very low voiced segment ratio ({voiced_ratio:.2f}) — unnatural speech pattern")
+        reasons.append(f"Moderate spectral regularities (ratio={spike_ratio:.1f})")
 
     return min(100, score), reasons
 

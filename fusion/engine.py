@@ -1,74 +1,58 @@
-from llm.phi3 import llm_generate_explanation
+from llm.llm import llm_generate_explanation
 
-def generate_final_verdict_ai(all_evidence: dict) -> dict:
+def generate_final_verdict_ai(all_evidence: dict, skip_llm: bool = False, model: str = 'qwen2:0.5b', stream: bool = False) -> dict:
     """
     Fusion Engine (Weighted Mathematical Logic).
-    DOES NOT use LLM for decision making. Final score is computed explicitly.
-    LLM is only used to format the final narrative.
     """
     if not all_evidence:
-        return {
-            'threat_score': 0,
-            'ai_generated_score': 0,
-            'manipulation_score': 0,
-            'final_score': 0,
-            'risk_level': 'Low',
-            'confidence': 'Low',
-            'key_findings': [],
-            'verdict': 'Low',
-            'ai_explanation': 'No data analyzed.'
-        }
+        return {'final_score': 0, 'risk_level': 'Low', 'ai_explanation': 'No data.'}
 
-    # Extract individual scores
-    img_score = all_evidence.get('Image Analysis', {}).get('score', 0)
-    aud_score = all_evidence.get('Audio Analysis', {}).get('score', 0)
-    vid_score = all_evidence.get('Video Analysis', {}).get('score', 0)
-    url_score = all_evidence.get('URL Analysis', {}).get('score', 0)
-    threat_found = all_evidence.get('Video Analysis', {}).get('threats', {}).get('score', 0) > 0 or \
-                   all_evidence.get('Image Analysis', {}).get('threats', {}).get('score', 0) > 0
+    # ... [Same scoring logic] ...
+    img_score = all_evidence.get('Image', {}).get('score', 0)
+    aud_score = all_evidence.get('Audio', {}).get('score', 0)
+    vid_score = all_evidence.get('Video', {}).get('score', 0)
+    url_score = all_evidence.get('URL', {}).get('score', 0)
+    # Extract sub-scores if available (Final Tier)
+    img_ai = all_evidence.get('Image', {}).get('ai_gen_score', img_score)
+    img_manip = all_evidence.get('Image', {}).get('manip_score', img_score)
+    vid_ai = all_evidence.get('Video', {}).get('ai_gen_score', vid_score)
+    vid_manip = all_evidence.get('Video', {}).get('manip_score', vid_score)
 
-    # Normalization & Weights (as explicitly requested)
-    # If a module wasn't run, we shouldn't penalize it to 0, but for this strict mathematical model:
-    # If the module wasn't run, we just use 0, but ideally we'd re-weight. Let's strictly follow the formula:
-    
-    # Calculate weighted final score
-    final_score = (0.35 * img_score) + (0.25 * aud_score) + (0.25 * vid_score) + (0.15 * url_score)
-    final_score = int(min(100, max(0, final_score)))
-    
-    # Override if threat found
-    if threat_found:
-        final_score = max(final_score, 100)
-    
-    # Compute Confidence %
+    threat_found = any(mod.get('threats', {}).get('score', 0) > 0 for mod in all_evidence.values())
+    raw_score = (0.35*float(img_score) + 0.25*float(aud_score) + 0.25*float(vid_score) + 0.15*float(url_score))
+    final_score = int(min(100.0, max(0.0, raw_score)))
+    if threat_found: final_score = 100
     confidence = int(abs((final_score / 100.0) - 0.5) * 2 * 100)
-    
-    # Determine Verdict
-    verdict = 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low'
-    
-    # Sub-scores for compatibility with app.py UI expectations
-    max_manipulation = max(img_score, vid_score)
-    max_ai = max(img_score, aud_score, vid_score)
-    
-    # Generate Explanation via Phi-3
-    ai_explanation = llm_generate_explanation(all_evidence, final_score, verdict, confidence)
+    verdict_level = 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low'
 
-    # Compile key findings heuristically for the UI
+    if skip_llm:
+        # Generate a structured technical summary for Turbo Mode
+        summary = f"### [TURBO] FORENSIC TECHNICAL SUMMARY\n\n"
+        summary += f"**Final Risk Score:** {final_score}% ({verdict_level} Threat Detected)\n"
+        summary += f"**Confidence Level:** {confidence}%\n\n"
+        summary += "#### Technical Breakdown:\n"
+        for mod, data in all_evidence.items():
+            m_score = data.get('score', 0)
+            summary += f"- **{mod}**: Analyzed with {m_score}% risk. Indicators: {', '.join(data.get('reasons', ['None']))}\n"
+        summary += "\n**Verdict:** Manual review of high-risk vectors is recommended. AI Analyst reasoning was bypassed for speed."
+        ai_explanation = summary
+    else:
+        ai_explanation = llm_generate_explanation(all_evidence, final_score, verdict_level, confidence, model=model, stream=stream)
+
     key_findings = []
     for mod, data in all_evidence.items():
-        reasons = data.get('reasons', [])
+        reasons = list(data.get('reasons', []))
         for r in reasons:
-            if r and "low" not in r.lower():
-                key_findings.append(f"[{mod}] {r}")
-    
+            if r: key_findings.append(f"[{mod}] {r}")
+
     return {
         'threat_score': 100 if threat_found else 0,
-        'ai_generated_score': int(max_ai),
-        'manipulation_score': int(max_manipulation),
+        'ai_generated_score': int(max(img_ai, aud_score, vid_ai)),
+        # FINAL TIER ACCURACY: Boost manipulation score if temporal anomalies are found in video
+        'manipulation_score': int(max(img_manip, vid_manip * 1.2, url_score)),
         'final_score': final_score,
-        'risk_level': verdict,
+        'risk_level': verdict_level,
         'confidence': f"{confidence}%",
-        'key_findings': key_findings[:5],
-        'verdict': verdict,
-        'ai_explanation': ai_explanation,
-        'summary': f"Mathematical Fusion: Image({0.35}), Audio({0.25}), Video({0.25}), URL({0.15}). Overrides active: {threat_found}."
+        'key_findings': key_findings[:5] if len(key_findings) > 5 else key_findings,
+        'ai_explanation': ai_explanation
     }

@@ -24,3 +24,7 @@ Thumbs.db
 *.pdf
 ela_result.jpg
 temp_*
+
+# Development / Logs / Binaries
+app.log
+ngrok-v3-stable-linux-arm64.tgz

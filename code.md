@@ -29,7 +29,7 @@ all_evidence = { 'Video': ..., 'Image': ..., 'Audio': ..., 'URL': ... }
 generate_final_verdict_ai(all_evidence) → returns verdict dict
      │
      ▼
-Display scores + Phi-3 explanation + Download PDF
+Display scores + Qwen2 explanation + Download PDF
 ```
 
 **Key Variables:**
@@ -231,9 +231,9 @@ confidence = abs((final_score / 100.0) - 0.5) * 2 * 100
 
 ---
 
-## `llm/phi3.py` — Explanation Layer
+## `llm/llm.py` — Explanation Layer
 
-**What it does:** Phi-3 Mini writes the forensic explanation after the verdict is decided.
+**What it does:** Qwen2 (0.5B) writes the forensic explanation after the verdict is decided.
 
 **Critical rules enforced in the prompt:**
 ```
@@ -248,10 +248,10 @@ llm_generate_explanation(evidence, final_score, verdict, confidence)
      │
      ├── Extracts numeric features from evidence dict
      ├── Builds structured prompt with all scores
-     ├── ollama.generate(model='phi3:mini', temperature=0.1, max_tokens=400)
+     ├── ollama.generate(model='qwen2:0.5b', temperature=0.1, max_tokens=400)
      └── Returns structured text:
              Summary: (2–3 lines)
-             Technical Analysis: (evidence-based)
+             Technical Analysis: (evidence-based, including Optical Flow & ViT)
              Conclusion: (verdict reinforcement)
 ```
 
@@ -267,7 +267,7 @@ llm_generate_explanation(evidence, final_score, verdict, confidence)
 1. Case metadata (timestamp, file analyzed)
 2. Per-modality score breakdown
 3. Key findings list
-4. Phi-3 Mini forensic explanation narrative
+4. Qwen2 (0.5B) forensic explanation narrative
 5. Confidence rating + verdict stamp
 
 ---

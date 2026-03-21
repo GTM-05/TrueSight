@@ -38,12 +38,14 @@ Verify: `ffmpeg -version` and `ffprobe -version`
 | macOS | Download [Ollama.app](https://ollama.com/download) |
 | Windows | Download [OllamaSetup.exe](https://ollama.com/download) |
 
-After install, pull the model:
+After install, pull the model (required for AI reports):
 ```bash
-ollama pull phi3:mini
+ollama pull qwen2:0.5b   # Lite (350MB) - Recommended for 8GB RAM
 ```
+Verify: `ollama list` — you should see `qwen2:0.5b`
 
-Verify: `ollama list` — you should see `phi3:mini`
+> [!TIP]
+> If `ollama pull` fails, ensure the Ollama server is running (see Step 1 of "Running the App").
 
 ---
 
@@ -56,7 +58,7 @@ Verify: `ollama list` — you should see `phi3:mini`
 | ffmpeg | `ffmpeg -version` | ✅ (accuracy) |
 | ffprobe | `ffprobe -version` | ✅ (accuracy) |
 | Ollama | `ollama list` | ✅ (reports) |
-| phi3:mini | `ollama list` shows phi3 | ✅ (reports) |
+| qwen2:0.5b | `ollama list` shows qwen2 | ✅ (reports) |
 
 ---
 
@@ -97,9 +99,16 @@ pip install -r requirements.txt
 
 ### Step 2 — Launch TrueSight
 
+**Method A: Standard (Requires Virtual Env Activation)**
 ```bash
 streamlit run app.py
 ```
+
+**Method B: Full Command (Most Reliable — works without manual activation)**
+| OS | Command |
+|---|---|
+| Linux / macOS | `./venv/bin/python3 -m streamlit run app.py` |
+| Windows | `.\venv\Scripts\python.exe -m streamlit run app.py` |
 
 Then open: **http://localhost:8501**
 
@@ -135,8 +144,27 @@ Then open: **http://localhost:8501**
 
 | OS | Command |
 |---|---|
-| Linux / macOS | `deactivate && rm -rf venv && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt` |
+| Linux / macOS | `deactivate; rm -rf venv; python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt` |
 | Windows (PowerShell) | `deactivate; Remove-Item venv -Recurse -Force; python -m venv venv; venv\Scripts\Activate.ps1; pip install -r requirements.txt` |
+
+---
+
+## Troubleshooting
+
+### "streamlit: command not found"
+If you get this error even after installing, it means `streamlit` is not in your global system path.
+**Solution:** Always use the "Full Command" (Method B as shown above):
+`./venv/bin/python3 -m streamlit run app.py` (Linux/macOS)
+`.\venv\Scripts\python.exe -m streamlit run app.py` (Windows)
+
+### "python: command not found"
+On many Linux systems, use `python3` instead of `python`.
+
+### "HTTP 500 Error" or "Ollama Connection Failed"
+This usually happens if the Ollama server isn't running or hasn't finished loading the model.
+1. Check if it's running: `curl http://localhost:11434/api/tags`
+2. If it returns an error, start it: `ollama serve &`
+3. Ensure you have the model: `ollama pull qwen2:0.5b`
 
 ---
 
@@ -155,5 +183,5 @@ Then open: **http://localhost:8501**
 | ViT Image Detector | 200–300 MB |
 | Audio Analysis (librosa) | 80–100 MB |
 | Video Frame Analysis | 300–400 MB |
-| Phi-3 Mini (LLM) | 1.0–1.5 GB |
-| **Total** | **~2.0–2.5 GB** |
+| AI Analyst (Qwen2) | 300–500 MB |
+| **Total** | **~1.0–1.5 GB** |

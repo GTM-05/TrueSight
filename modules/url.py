@@ -54,6 +54,25 @@ def _has_homograph(domain: str) -> bool:
     return has_latin and (has_cyrillic or has_greek)
 
 
+import difflib
+
+# High-value domains frequently targeted for spoofing
+_GOLDEN_DOMAINS = [
+    'google', 'amazon', 'paypal', 'microsoft', 'facebook', 'netflix',
+    'apple', 'icloud', 'gmail', 'outlook', 'chase', 'fidelity'
+]
+
+def _fuzzy_domain_match(domain: str) -> str:
+    """Detects visually similar (fuzzy) matches to high-value brands."""
+    for golden in _GOLDEN_DOMAINS:
+        if domain == golden:
+            return None # Exact match is fine
+        # SequenceMatcher ratio > 0.8 identifies spoofs like 'paypa1' or 'g00gle'
+        ratio = difflib.SequenceMatcher(None, domain, golden).ratio()
+        if ratio > 0.8:
+            return golden
+    return None
+
 def _is_ip_url(url: str) -> bool:
     """Detect URLs pointing directly to IP addresses."""
     return bool(re.search(r'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', url))
@@ -106,6 +125,13 @@ def analyze_url(url: str) -> dict:
         score += 45
         reasons.append("Homograph attack detected — URL contains mixed Unicode scripts (e.g. Cyrillic + Latin)")
         flags['homograph'] = True
+    
+    # ── 4b. Fuzzy Domain Spoofing ─────────────────────────────────────────────
+    fuzzy_match = _fuzzy_domain_match(domain)
+    if fuzzy_match:
+        score += 40
+        reasons.append(f"Fuzzy Domain Spoofing: '{domain}' is 80%+ similar to '{fuzzy_match}'")
+        flags['fuzzy_match'] = fuzzy_match
 
     # ── 5. HTTPS check ────────────────────────────────────────────────────────
     if not url_lower.startswith('https://'):
