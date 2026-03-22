@@ -46,6 +46,26 @@ def generate_final_verdict_ai(all_evidence: dict, skip_llm: bool = False, model:
         raw_score = weighted_avg
 
     final_score = int(min(100.0, max(0.0, raw_score)))
+    
+    # --- Phase 2: Elite Signal Integration ---
+    # These signals are high-confidence indicators and can boost the score
+    img_metrics = all_evidence.get('Image', {}).get('metrics', {})
+    vid_metrics = all_evidence.get('Video', {}).get('metrics', {})
+    
+    # 1. Spectral Slope Anomaly (Image or Video Frame)
+    slope = img_metrics.get('spectral_slope', -2.2)
+    if abs(slope - (-2.2)) > 0.5:
+        final_score = max(final_score, 75) # High confidence AI signature
+        
+    # 2. Chromatic Aberration Anomaly (Perfect alignment)
+    chrom = img_metrics.get('chrom_score', 10.0)
+    if chrom < 2.5 and img_score > 20:
+        final_score = max(final_score, 65)
+        
+    # 3. Iris Jitter (Frozen eyes)
+    if vid_metrics.get('iris_jitter_anomaly'):
+        final_score = max(final_score, 70)
+        
     if threat_found: final_score = 100
     confidence = int(abs((final_score / 100.0) - 0.5) * 2 * 100)
     verdict_level = 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low'

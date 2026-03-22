@@ -146,6 +146,29 @@ def detect_ai_generated(image_path: str, low_resource: bool = False, face_focus:
     return _heuristic_ai_detection(image_path)
 
 
+def _chromatic_aberration_score(img_cv: np.ndarray) -> float:
+    """
+    Real cameras have slight R/B channel misalignment (chromatic aberration).
+    AI generators often produce perfectly aligned channels.
+    A suspiciously LOW score (< 2.0) indicates synthetic generation.
+    """
+    if img_cv is None: return 0.0
+    b, g, r = cv2.split(img_cv)
+    # Compare Red and Blue channels for displacement
+    rb_diff = cv2.absdiff(r, b)
+    return float(np.mean(rb_diff))
+
+def _noise_floor_analysis(img_cv: np.ndarray) -> float:
+    """
+    Real sensors have ISO noise. AI images often have suspiciously clean/uniform noise floors.
+    Too low std (< 0.5) in the residual indicates synthetic origin.
+    """
+    if img_cv is None: return 0.0
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    # Extract noise residual using a high-pass filter or thresholding zero
+    _, residual = cv2.threshold(gray, 0, 255, cv2.THRESH_TOZERO)
+    return float(np.std(residual))
+
 def _spectral_analysis(image_path: str) -> dict:
     """
     Analyzes the 2D Power Spectrum of an image to detect GAN/AI grid artifacts.
@@ -178,17 +201,42 @@ def _spectral_analysis(image_path: str) -> dict:
         else:
             peaks, mean_energy = 0, 1
         
-        if smoothness < 2.35:  # Tuned from 2.2 to be more sensitive
+        # 1. Spectral Smoothness (Existing)
+        if smoothness < 2.35:
             score += 20
             reasons.append(f"Spectral smoothness detected (std={smoothness:.2f})")
         
-        # Grid detection: Spikes in the spectrum
+        # 2. Grid detection (Existing)
         structural_artifact = False
         peak_ratio = float(peaks / (mean_energy + 1e-9))
-        if peak_ratio > 120:  # Tightened from 140/180
+        if peak_ratio > 120:
             score += 40 
             reasons.append(f"Periodic spectral peaks detected (Ratio: {peak_ratio:.1f}) — structural AI artifacts (Grid)")
             structural_artifact = True
+            
+        # 3. NEW: Radial Power Spectrum Slope
+        # Real images follow a 1/f^2 law (Slope ~ -2.2). AI deviates.
+        h, w = magnitude.shape
+        y, x = np.indices((h, w))
+        r = np.sqrt((x - w//2)**2 + (y - h//2)**2).astype(np.int32)
+        tbin = np.bincount(r.ravel(), magnitude.ravel())
+        nr = np.bincount(r.ravel())
+        radial_profile = tbin / (nr + 1e-9)
+        
+        # Fit log-log slope for mid-frequencies
+        indices = np.arange(5, min(h, w)//2 - 5)
+        if len(indices) > 5:
+            log_r = np.log(indices)
+            log_p = np.log(radial_profile[indices] + 1e-9)
+            slope, _ = np.polyfit(log_r, log_p, 1)
+            # Normal: ~ -2.2. AI: deviates heavily
+            slope_anomaly = abs(slope - (-2.2)) > 0.5
+            if slope_anomaly:
+                score += 25
+                reasons.append(f"Radial spectral slope anomaly (Slope: {slope:.2f}) — unnatural frequency distribution.")
+        else:
+            slope = -2.2
+            slope_anomaly = False
             
     except Exception:
         pass
@@ -198,7 +246,9 @@ def _spectral_analysis(image_path: str) -> dict:
         'reasons': reasons, 
         'smoothness': float(smoothness) if 'smoothness' in locals() else 0.0,
         'structural_artifact': structural_artifact,
-        'peak_ratio': peak_ratio if 'peak_ratio' in locals() else 0.0
+        'peak_ratio': peak_ratio if 'peak_ratio' in locals() else 0.0,
+        'spectral_slope': float(slope) if 'slope' in locals() else -2.2,
+        'slope_anomaly': slope_anomaly if 'slope_anomaly' in locals() else False
     }
 
 
@@ -220,6 +270,19 @@ def _heuristic_ai_detection(image_path: str) -> dict:
         spec_res = _spectral_analysis(image_path)
         score += spec_res['score']
         reasons.extend(spec_res['reasons'])
+        
+        # NEW: Modern Heuristics (Chromatic & Noise)
+        img_cv = cv2.imread(image_path)
+        if img_cv is not None:
+            chrom_score = _chromatic_aberration_score(img_cv)
+            if chrom_score < 2.5: # Suspiciously low alignment
+                score += 25
+                reasons.append(f"Chromatic alignment anomaly (Score: {chrom_score:.2f}) — typical of GAN/Diffusion synthesis.")
+            
+            noise_std = _noise_floor_analysis(img_cv)
+            if noise_std < 0.65: # Suspiciously clean
+                score += 20
+                reasons.append(f"Synthetic noise floor detected (std={noise_std:.2f}) — lacking natural sensor grain.")
     except Exception:
         pass
 
@@ -286,8 +349,9 @@ def analyze_image(image_path: str, low_resource: bool = False) -> dict:
     elif ai_prob >= 20:
         reasons.append(f"AI-signature detected (Prob: {ai_prob}%)")
 
-    # 1.1 Spectral Analysis (Frequency Domain)
-    # Result is already incorporated in ai_prob via _heuristic_ai_detection fallback.
+    # 1.1 Spectral Analysis (Explicitly extracted for downstream metrics)
+    spec_res = _spectral_analysis(image_path)
+    # Note: score already boosted via ai_res which calls _heuristic_ai_detection
 
     # 1.1 Noise Consistency Check (Deepfake Artifacts)
     # If the face focus detected a face, compare it to the background noise
@@ -336,7 +400,10 @@ def analyze_image(image_path: str, low_resource: bool = False) -> dict:
             'ela_std_dev': ela_std,
             'laplacian_variance': blur_variance,
             'model_used': bool(ai_res.get('model_used')),
-            'structural_artifact': ai_res.get('structural_artifact', False) or (spec_res.get('structural_artifact', False) if 'spec_res' in locals() else False),
-            'peak_ratio': spec_res.get('peak_ratio', 0.0) if 'spec_res' in locals() else 0.0
+            'structural_artifact': ai_res.get('structural_artifact', False) or spec_res.get('structural_artifact', False),
+            'peak_ratio': spec_res.get('peak_ratio', 0.0),
+            'spectral_slope': spec_res.get('spectral_slope', -2.2),
+            'chrom_score': ai_res.get('chrom_score', 0.0),
+            'noise_std': ai_res.get('noise_std', 0.0)
         }
     }

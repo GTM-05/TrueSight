@@ -273,7 +273,7 @@ def analyze_video(file_path: str, low_resource: bool = False, deep_scan: bool = 
         
         frames_dir = tempfile.mkdtemp()
         frame_paths, frame_ai_scores, frame_reasons = [], [], []
-        eye_paths, skin_signals, mar_values = [], [], []
+        eye_paths, skin_rgb, mar_values = [], [], []
         structural_hits = 0
         audio_analyzed = False
 
@@ -342,9 +342,14 @@ def analyze_video(file_path: str, low_resource: bool = False, deep_scan: bool = 
                     eye_paths.append(roi['eyes'])
                     # Mouth Aspect (for Lip-Sync)
                     mar_values.append(_analyze_mouth_aspect_ratio(roi['mouth']))
-                    # Pulse Liveness (Green channel periodicity)
+                    # Pulse Liveness (Multi-channel for CHROM)
                     f_img = cv2.imread(roi['face'])
-                    if f_img is not None: skin_signals.append(float(np.mean(f_img[:,:,1])))
+                    if f_img is not None:
+                        # Extract R, G, B means from face ROI
+                        b_m = float(np.mean(f_img[:,:,0]))
+                        g_m = float(np.mean(f_img[:,:,1]))
+                        r_m = float(np.mean(f_img[:,:,2]))
+                        skin_rgb.append((r_m, g_m, b_m))
             else:
                 score = h_score
             
@@ -358,18 +363,34 @@ def analyze_video(file_path: str, low_resource: bool = False, deep_scan: bool = 
         eye_var = eye_data['var']
         blink_count = eye_data['blinks']
         
-        # ── Step 5.1: rPPG Periodicity (FFT) ───────────
+        # ── Step 5.1: rPPG Vitality (CHROM Method) ──────
         liveness_anomaly = False
-        if len(skin_signals) >= 15:
-            sig = np.array(skin_signals) - np.mean(skin_signals)
+        enough_liveness_data = len(skin_rgb) >= ForensicConfig.MIN_LIVENESS_SIGNALS
+        
+        if enough_liveness_data:
+            rgb = np.array(skin_rgb)
+            # CHROM decomposition (de Haan & Jeanne)
+            # xs = 3*R - 2*G; ys = 1.5*R + G - 1.5*B
+            xs = 3 * rgb[:,0] - 2 * rgb[:,1]
+            ys = 1.5 * rgb[:,0] + rgb[:,1] - 1.5 * rgb[:,2]
+            
+            # Normalize and combine
+            sig = (xs / (np.std(xs) + 1e-9)) - (ys / (np.std(ys) + 1e-9))
+            sig = sig - np.mean(sig)
+            
             fft_p = np.abs(np.fft.rfft(sig))
-            # Focus on 0.8 Hz - 3.5 Hz range (Human pulse range)
-            # With 6 fps (60 samples in 10s), index 1 is ~0.1Hz, index 10 is ~1.0Hz
-            # Pulse Liveness (Green channel periodicity)
-            # High-confidence: Peak must be at least 3x the average noise floor
-            fft_p = np.abs(np.fft.fft(skin_signals))
-            if np.max(fft_p) < np.mean(fft_p) * 3.0:
+            # Peak to Mean Ratio (SNR)
+            if np.max(fft_p) < np.mean(fft_p) * 2.8: # Slightly more sensitive than green-only
                 liveness_anomaly = True
+                
+        # ── Step 5.2: Gaze & Iris Jitter ────────────────
+        # Human eyes have microsaccades; AI eyes are often frozen or smooth.
+        iris_jitter_anomaly = False
+        if len(eye_paths) >= 5:
+            # We use eye_var from Step 5, but add iris-specific check
+            if 0 < eye_var < 0.05: # Suspiciously static
+                iris_jitter_anomaly = True
+                frame_reasons.append("Gaze naturalness anomaly (Frozen/Static Iris)")
         
         # ── Step 6: Audio & Lip-Sync Correlation ──
         audio_score, audio_reasons = 0, []
@@ -431,7 +452,7 @@ def analyze_video(file_path: str, low_resource: bool = False, deep_scan: bool = 
             frame_reasons.append("Liveness Anomaly: Eyes appear unnaturally static")
 
         # ── Step 8: Biological Override ───────────────
-        enough_liveness_data = len(skin_signals) >= ForensicConfig.MIN_LIVENESS_SIGNALS and len(eye_paths) >= ForensicConfig.MIN_LIVENESS_FACES
+        enough_liveness_data = len(skin_rgb) >= ForensicConfig.MIN_LIVENESS_SIGNALS
         bio_override = False
         has_grids = structural_hits >= 1
         
@@ -486,7 +507,10 @@ def analyze_video(file_path: str, low_resource: bool = False, deep_scan: bool = 
                 'meta_score': int(meta_score),
                 'structural_artifact': bool(has_grids),
                 'blink_count': int(blink_count),
-                'liveness_override': bool(bio_override)
+                'liveness_override': bool(bio_override),
+                'iris_jitter_anomaly': bool(iris_jitter_anomaly),
+                'liveness_anomaly': bool(liveness_anomaly),
+                'enough_liveness_data': bool(enough_liveness_data)
             }
         }
 
