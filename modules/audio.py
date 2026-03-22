@@ -208,62 +208,82 @@ def analyze_audio(audio_path: str) -> dict:
         return {
             'score': 0, 'risk_level': 'Low',
             'reasons': ["Librosa not installed — audio analysis skipped"],
-            'metrics': {}
+            'metrics': {},
+            'confidence': 0.0,
+            'is_strong': False
         }
 
     try:
         y, sr = librosa.load(audio_path, sr=None, duration=30)  # Max 30s for speed
+        if len(y) == 0:
+            return {'score': 0, 'risk_level': 'Low', 'reasons': ["Empty audio file"], 'metrics': {}, 'confidence': 0.0, 'is_strong': False}
 
         features = _extract_advanced_features(y, sr)
         score, reasons = _score_from_features(features)
 
-        # Silence ratio check
-        silence_frames = np.sum(np.abs(y) < 0.005)
-        silence_ratio = float(silence_frames / len(y))
+        # ── 1. Pitch Jitter (Robotic Stability) ──────────────────────────────
+        # Real human voices have micro-variations. TTS/VC is suspiciously smooth.
+        # Already partially covered in _score_from_features, but let's refine.
+        f0, voiced_flag, _ = librosa.pyin(y, fmin=60, fmax=400, sr=sr, fill_na=0)
+        voiced_f0 = f0[voiced_flag > 0]
+        if len(voiced_f0) > 20:
+            jitter = float(np.std(np.diff(voiced_f0)) / (np.mean(voiced_f0) + 1e-9))
+            if jitter < 0.015:
+                score = min(100, score + 30)
+                reasons.append(f"Robotic pitch stability (jitter={jitter:.4f}). Human voices vary > 2%.")
 
-        # Ambient Floor Analysis (Is silence "natural" room tone or digital zero?)
-        # Use explicit indexing cast for linter
-        y_np = np.asarray(y)
-        mask = np.abs(y_np) < 0.01
-        quiet_frames = y_np[mask]
-        if len(quiet_frames) > sr // 5:
-            q_std = float(np.std(quiet_frames))
-            if q_std < 1e-4: # Extremely clean
-                score = min(100, score + 10)
-                reasons.append("Exceptionally clean noise floor (studio or synthetic environment)")
+        # ── 2. Silence Profile (Digital Zero Check) ──────────────────────────
+        rms = librosa.feature.rms(y=y)[0]
+        silence_mask = rms < 0.002
+        silence_ratio = float(np.mean(silence_mask))
+        if silence_ratio > 0.1:
+            silence_segments = rms[silence_mask]
+            if len(silence_segments) > 0 and np.std(silence_segments) < 0.0003:
+                score = min(100, score + 25)
+                reasons.append(f"Digital-zero silence detected ({silence_ratio:.1%}). Real mics capture ambient noise.")
 
-    # Digital silence checking (mathematically zero is very suspicious in raw recordings)
-        silence_regions = np.where(y == 0)[0]
-        digital_silence_ratio = len(silence_regions) / len(y)
-        if digital_silence_ratio > 0.999:
-            score = min(100, score + 15) # Reduced from 25+
-            reasons.append("Digital Silence Anomaly: Silence regions are mathematically zero (no room tone/ambient noise)")
-            reasons.append(f"Very high silence ratio ({digital_silence_ratio*100:.1f}%) — may indicate processing artifacts")
-            reasons.append("Nearly silent file — analysis may be unreliable")
+        # ── 3. Formant Transitions (Abrupt Shifts) ───────────────────────────
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+        mfcc_delta = np.abs(np.diff(mfcc, axis=1))
+        # Check for outliers in transitions
+        abrupt_threshold = float(np.percentile(mfcc_delta, 97))
+        abrupt_transitions = np.sum(mfcc_delta > abrupt_threshold)
+        transition_ratio = float(abrupt_transitions / mfcc_delta.size)
+        if transition_ratio > 0.04:
+            score = min(100, score + 20)
+            reasons.append(f"Abrupt formant transitions ({transition_ratio:.1%}). Typical of cloning splice artifacts.")
 
-        elif silence_ratio > 0.6:
-            score = min(100, score + 15)
-            reasons.append(f"Very high silence ratio ({silence_ratio:.1%}) — may indicate processing artifacts")
-        if silence_ratio > 0.95:
-            reasons.append("Nearly silent file — analysis may be unreliable")
+        # ── 4. Metadata Fingerprint ──────────────────────────────────────────
+        if int(sr) in [22050, 24000] and float(len(y)) / float(sr) > 3.0:
+            score = min(100, score + 10)
+            reasons.append(f"Suspicious sample rate {sr}Hz — common in TTS pipelines.")
+
+        confidence = float(min(float(len(y)) / (float(sr) * 5.0 + 1e-9), 1.0))
+        is_strong = score >= 45
 
         return {
             'score': score,
             'risk_level': 'High' if score >= 60 else 'Medium' if score >= 30 else 'Low',
-            'reasons': reasons,
+            'reasons': list(set(reasons)), # Deduplicate
             'metrics': {
                 **features,
-                'silence_ratio': float(silence_ratio),
-                'sample_rate': sr,
-                'duration_s': round(len(y) / sr, 2)
-            }
+                'silence_ratio': silence_ratio,
+                'sample_rate': int(sr),
+                'duration_s': round(float(len(y)) / float(sr), 2),
+                'jitter': jitter if 'jitter' in locals() else 0.0,
+                'transition_ratio': transition_ratio if 'transition_ratio' in locals() else 0.0
+            },
+            'confidence': confidence,
+            'is_strong': is_strong
         }
 
     except Exception as e:
         return {
             'score': 0, 'risk_level': 'Low',
             'reasons': [f"Audio analysis error: {str(e)}"],
-            'metrics': {}
+            'metrics': {},
+            'confidence': 0.0,
+            'is_strong': False
         }
 
 

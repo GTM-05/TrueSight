@@ -63,86 +63,115 @@ def _get_face_detector():
     return _face_cascade
 
 
+def _srm_lite_residual(img_bgr: np.ndarray) -> dict:
+    """
+    Lightweight 3-filter SRM (Steganalysis Rich Model) residual.
+    Detects manipulation noise patterns invisible to the human eye.
+    """
+    if img_bgr is None: return {'score': 0, 'confidence': 0, 'is_strong': False, 'reasons': []}
+    
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    
+    # SRM filters
+    k1 = np.array([[-1, 2, -1]], dtype=np.float32)
+    k2 = np.array([[-1, 0, 0], [0, 2, 0], [0, 0, -1]], dtype=np.float32)
+    k3 = np.array([[-1, 2, -1], [2, -4, 2], [-1, 2, -1]], dtype=np.float32) / 4.0
+
+    residuals = [cv2.filter2D(gray, -1, k) for k in [k1, k2, k3]]
+    
+    risk = 0
+    reasons = []
+    
+    for i, res in enumerate(residuals):
+        res_std = float(np.std(res))
+        res_kurtosis = float(np.mean((res - np.mean(res))**4) / (res_std**4 + 1e-9))
+        
+        if res_std < 8.0:
+            risk += 15
+            reasons.append(f"SRM residual {i+1}: clean noise floor (std={res_std:.2f})")
+        if res_kurtosis > 10.0:
+            risk += 10
+            reasons.append(f"SRM residual {i+1}: manipulation artifacts (kurtosis={res_kurtosis:.1f})")
+            
+    return {
+        'score': min(risk, 45),
+        'confidence': 0.8,
+        'is_strong': risk >= 30,
+        'reasons': reasons
+    }
+
+
 def detect_ai_generated(image_path: str, low_resource: bool = False, face_focus: bool = True) -> dict:
     """
     Uses a pre-trained ViT model to score the probability that an image
     was AI-generated. Returns a score 0–100 and a label.
-    Falls back to heuristic indicators if model is unavailable.
     """
     detector = _load_detector()
     face_cascade = _get_face_detector()
+    
+    ai_score = 0
+    label = "Unknown"
+    confidence = 0.5
+    is_strong = False
+    texture_bonus = 0
+    face_metrics = {}
 
     # ── ML path ──────────────────────────────────────────────────────────────
-    # Skip ML path in Low Resource Mode (8GB RAM optimization)
     if not low_resource and detector is not None:
-        face_metrics = {}
         img_cv = cv2.imread(image_path)
         img_target = None
         try:
             if img_cv is not None and face_focus and face_cascade is not None:
                 gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
                 full_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-                # Increased sensitivity
                 faces = face_cascade.detectMultiScale(gray, 1.05, 3)
-                if len(faces) == 0:
-                    profile = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
-                    faces = profile.detectMultiScale(gray, 1.05, 3)
                 
                 if len(faces) > 0:
                     x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
-                    pad_w, pad_h = int(w * 0.15), int(h * 0.15)
-                    x1, y1 = max(0, x-pad_w), max(0, y-pad_h)
-                    x2, y2 = min(img_cv.shape[1], x+w+pad_w), min(img_cv.shape[0], y+h+pad_h)
-                    face_crop = img_cv[y1:y2, x1:x2]
+                    face_crop = img_cv[max(0,y-10):y+h+10, max(0,x-10):x+w+10]
                     face_var = cv2.Laplacian(cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-                    
                     face_metrics = {'face_var': float(face_var), 'bg_var': float(full_var)}
                     img_target = Image.fromarray(cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB))
-                    print(f"[IMAGE] 🧿 Face-Centric Scan: Focusing on {w}x{h} region.")
+                    confidence = 0.85
 
-            # ── Micro-Texture Analysis (MesoNet-inspired) ─────────────
-            # High-frequency analysis of skin texture / noise patterns
-            gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
-            # Denoise vs Original diff indicates "processed" smoothness
-            denoised = cv2.fastNlMeansDenoising(gray_crop, h=10)
-            noise_map = cv2.absdiff(gray_crop, denoised)
-            noise_std = float(np.std(noise_map))
-            # AI/GAN faces often have unnaturally uniform noise levels
-            if noise_std < 0.85: # Slightly more sensitive
-                texture_bonus = 35 # Increased from 25
-                face_metrics['texture_anomaly'] = 1.0
-                print(f"[IMAGE] 🧬 Micro-Texture Anomaly (std={noise_std:.2f})")
+                    # Micro-texture check
+                    gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+                    denoised = cv2.fastNlMeansDenoising(gray_crop, h=10)
+                    noise_map = cv2.absdiff(gray_crop, denoised)
+                    noise_std = float(np.std(noise_map))
+                    if noise_std < 0.85:
+                        texture_bonus = 35
+                        face_metrics['texture_anomaly'] = 1.0
 
             if img_target is None:
                 img_target = Image.open(image_path).convert("RGB")
+                confidence = 0.6
             
             img_optimized = img_target.resize((224, 224), Image.LANCZOS)
             results = detector(img_optimized)
             
-            ai_score = 0
-            label = "Unknown"
             for r in results:
                 lbl = r["label"].lower()
                 if any(k in lbl for k in ["artificial", "fake", "ai", "generated", "synthetic"]):
                     ai_score = int(r["score"] * 100) + texture_bonus
                     label = r["label"]
+                    is_strong = (r["score"] > 0.45)
                     break
             
             return {
-                "ai_probability": ai_score,
+                "ai_probability": min(100, ai_score),
                 "label": label,
-                "method": "ViT (Face-Centric Boost)" if img_cv is not None else "ViT (Full Scan)",
-                "model_used": True,
+                "confidence": confidence,
+                "is_strong": is_strong,
+                "method": "ViT",
                 "face_metrics": face_metrics
             }
         except Exception:
-            pass  # Fall through to heuristic path
+            pass
         finally:
-            # Explicit cleanup
-            if img_cv is not None: del img_cv
+            if 'img_cv' in locals() and img_cv is not None: del img_cv
             gc.collect()
 
-    # ── Heuristic fallback ────────────────────────────────────────────────────
     return _heuristic_ai_detection(image_path)
 
 
@@ -289,6 +318,8 @@ def _heuristic_ai_detection(image_path: str) -> dict:
     return {
         "ai_probability": min(100, score),
         "label": "Likely AI-Generated" if score >= 30 else "Likely Real",
+        "confidence": 0.5 if score < 20 else 0.7,
+        "is_strong": score >= 45,
         "method": "Heuristic (resolution + spectral)",
         "model_used": False
     }
@@ -335,27 +366,32 @@ def blur_detection(image_path):
 
 def analyze_image(image_path: str, low_resource: bool = False) -> dict:
     """
-    Combines ELA analysis and Deep Learning (ViT) detection.
+    Combines ELA, SRM-Lite, Spectral, and Deep Learning (ViT) detection.
     """
     score = 0
     reasons = []
+    
+    img_cv = cv2.imread(image_path)
 
     # 1. AI-generation check (ViT / Layout)
     ai_res = detect_ai_generated(image_path)
     ai_prob = int(ai_res.get("ai_probability") or 0)
     score += ai_prob
     if ai_prob >= 50:
-        reasons.append(f"CRITICAL: High AI-generation signal ({ai_prob}%) [{ai_res.get('method', 'N/A')}]")
+        reasons.append(f"CRITICAL: High AI-generation signal ({ai_prob}%)")
     elif ai_prob >= 20:
         reasons.append(f"AI-signature detected (Prob: {ai_prob}%)")
 
-    # 1.1 Spectral Analysis (Explicitly extracted for downstream metrics)
-    spec_res = _spectral_analysis(image_path)
-    # Note: score already boosted via ai_res which calls _heuristic_ai_detection
+    # 2. SRM-Lite (Steganalysis)
+    srm_res = _srm_lite_residual(img_cv)
+    score += srm_res['score']
+    reasons.extend(srm_res['reasons'])
 
-    # 1.1 Noise Consistency Check (Deepfake Artifacts)
-    # If the face focus detected a face, compare it to the background noise
-    # (Using Laplacian variance as a proxy for digital noise consistency)
+    # 3. Spectral Analysis
+    spec_res = _spectral_analysis(image_path)
+    # Heuristic detection already included spectral, but we ensure its metrics are exposed
+
+    # 4. Noise Consistency Check
     try:
         if 'face_metrics' in ai_res:
             f_var = ai_res['face_metrics']['face_var']
@@ -363,11 +399,11 @@ def analyze_image(image_path: str, low_resource: bool = False) -> dict:
             ratio = f_var / (bg_var + 1e-9)
             if ratio < 0.4 or ratio > 2.5:
                 score += 35
-                reasons.append(f"Anomaly: Noise inconsistency between Face and Background (Ratio: {ratio:.1f}) — typical of deepfake compositing.")
+                reasons.append(f"Anomaly: Noise inconsistency Fac/BG (Ratio: {ratio:.1f})")
     except Exception:
         pass
 
-    # 2. ELA
+    # 5. ELA
     ela_res = error_level_analysis(image_path)
     ela_map = None
     ela_std = 0.0
@@ -376,34 +412,41 @@ def analyze_image(image_path: str, low_resource: bool = False) -> dict:
         ela_map = ela_res.get('ela_map_path')
         if ela_std > 15.0:
             score += 35
-            reasons.append(f"High ELA variance (Std Dev: {ela_std:.2f}) — possible splicing/editing")
+            reasons.append(f"High ELA variance (Std Dev: {ela_std:.2f})")
         elif ela_std > 8.0:
             score += 15
-            reasons.append(f"Moderate ELA variance (Std Dev: {ela_std:.2f}) — minor editing suspected")
 
-    # 3. Blur
+    # 6. Blur
     blur_res = blur_detection(image_path)
     blur_variance = float(blur_res.get('variance') or 0)
-    if blur_res.get('is_blurry'):
+    if blur_res.get('is_blurry') and score < 50: # Only add if we don't already have strong signal
         score += 15
-        reasons.append(f"Image is blurry (Laplacian variance {blur_variance:.2f}) — may hide forgery artifacts")
 
     final_score = min(100, score)
+    
+    # Confidence calculation: Weighted average of sub-confidence
+    confidence = float(np.mean([
+        ai_res.get('confidence', 0.5),
+        srm_res.get('confidence', 0.8),
+        0.7 # Baseline for ELA/Spectral
+    ]))
+    
+    is_strong = (ai_prob > 40 or srm_res['is_strong'] or ela_std > 12)
+
     return {
         'score': final_score,
         'risk_level': 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low',
-        'reasons': reasons,
+        'reasons': list(set(reasons)),
         'ela_map': ela_map,
         'ai_detection': ai_res,
         'metrics': {
             'ai_probability': ai_prob,
             'ela_std_dev': ela_std,
             'laplacian_variance': blur_variance,
-            'model_used': bool(ai_res.get('model_used')),
-            'structural_artifact': ai_res.get('structural_artifact', False) or spec_res.get('structural_artifact', False),
-            'peak_ratio': spec_res.get('peak_ratio', 0.0),
-            'spectral_slope': spec_res.get('spectral_slope', -2.2),
-            'chrom_score': ai_res.get('chrom_score', 0.0),
-            'noise_std': ai_res.get('noise_std', 0.0)
-        }
+            'srm_score': srm_res['score'],
+            'structural_artifact': spec_res.get('structural_artifact', False),
+            'spectral_slope': spec_res.get('spectral_slope', -2.2)
+        },
+        'confidence': confidence,
+        'is_strong': is_strong
     }
