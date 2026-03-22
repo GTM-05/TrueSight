@@ -1,84 +1,81 @@
-# TrueSight AI — Cyber Forensics Tool
+# TrueSight AI — Multimodal Cyber Forensics (v3.0)
 
-> **Local. Private. AI-Powered.** No data ever leaves your machine.
+> **Local. Private. Heuristic-first.** Scoring and fusion are deterministic; the LLM only narrates from structured facts.
 
-A multimodal cyber forensics tool that detects AI-generated, deepfaked, or manipulated media using a combination of computer vision, signal processing, and a local LLM (Qwen2 0.5B) for report generation.
-
----
-
-## How It Works
-
-```
-Upload Media → Multi-Stage Analysis → Forensic Fusion → Qwen2 Analyst → PDF Report
-```
-
-1.  **AI Image Detection**: ViT transformers + **Radial Spectral Slope** + **Chromatic Aberration** detects internal "grids" and frequency anomalies.
-2.  **Biological Liveness**: Monitors **CHROM-rPPG** pulse and **Iris Jitter** (Gaze Naturalness) to confirm human presence.
-3.  **Spatio-Temporal Video**: SSIM and Optical Flow analyze frame-to-frame consistency for deepfake warping.
-4.  **Audio Forensics**: Pitch, MFCC, and spectral energy analysis catches synthetic TTS and voice clones.
-5.  **Forensic Fusion**: A **Max-Biased** cascading engine that applies "Low-Confidence Capping" (19% safety floor).
-6.  **Qwen2 (0.5B)**: Local LLM writes the final forensic explanation with zero cloud dependency.
+TrueSight detects AI-generated, deepfaked, or manipulated **image, audio, video, and URL** content using computer vision, signal processing, and optional **Ollama / Qwen** text for human-readable reports. All heavy scoring runs offline on your machine.
 
 ---
 
-## Quick Start
+## How it works
+
+```
+Upload → Per-modality analyzers → Fusion engine (math) → LLM narrative (optional) → PDF / UI
+```
+
+1. **Image** — ViT-style detector, ELA, spectral slope, chroma/noise/DCT/copy-move (some checks skipped or retuned for **video frames** when `source="video"`).
+2. **Video** — Sampled frames analyzed as video-sourced images; **face ROI** adjacent-frame SSIM (dual-threshold morphing), optical-flow **face warp**, rPPG liveness, lip–audio sync, metadata; **`morphing_score`** combines spatial signals, metadata scale, and **audio phase spike** density (not the same as aggregate video risk).
+3. **Audio** — Pitch, MFCC, HNR, spectral flatness, **phase discontinuities** (splice spikes), silence/TTS heuristics.
+4. **URL** — Homograph, entropy, shorteners, TLS, phishing keywords (RFC1918 / localhost handling).
+5. **Fusion** (`fusion/engine.py`) — **Strong-anchor fusion**, **cross-modal spread penalty**, **liveness reduction**, then **graduated safety floor** (config-driven; not a single fixed 19% rule for every path).
+6. **LLM** (`llm/llm.py`) — Receives a **JSON forensic brief** derived from evidence + fusion output so small models are constrained to real numbers; default model is set in **`config.py`** (`LLM_VERDICT_MODEL`, often `qwen2.5:3b`; `qwen2:0.5b` still works for smoke tests).
+
+**UI:** Per-frame indicator floods are grouped by tag via **`display_indicators()`** in `app.py` (e.g. many `[ELA]` lines → one summary).
+
+---
+
+## Quick start
 
 ```bash
-# 1. Clone
 git clone https://github.com/GTM-05/TrueSight.git && cd TrueSight
 
-# 2. Install system tools
 sudo apt install ffmpeg -y
 
-# 3. Install AI brain
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull qwen2:0.5b
+ollama serve &
+ollama pull qwen2.5:3b    # or: ollama pull qwen2:0.5b  (see config.py)
 
-# 4. Python setup
-python3 -m venv venv && source venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 5. Launch
-ollama serve &
 streamlit run app.py
 ```
 
+**Regression / smoke:** `python verify_accuracy.py` (optional `--strict-benchmarks` for labeled clips in `test_samples/`).
+
 ---
 
-## System Requirements
+## System requirements
 
 | Component | Minimum | Recommended |
-|---|---|---|
+|-----------|---------|-------------|
 | RAM | 4 GB | 8 GB+ |
 | CPU | 4-core | 6-core+ |
-| Storage | 5 GB | 10 GB |
+| Storage | ~5 GB | ~10 GB+ (ViT + optional LLM) |
 | Python | 3.10+ | 3.12+ |
-| OS | Ubuntu 22.04+ | Ubuntu 24.04 |
+| OS | Linux (Ubuntu 22.04+) | Ubuntu 24.04 |
 
 ---
 
-## Project Structure
+## Repository layout
 
 ```
 TrueSight/
-├── app.py                  ← Main UI (single entry point)
+├── app.py                 # Streamlit UI, fusion + LLM orchestration
+├── config.py              # ForensicConfig (CFG) — thresholds, fusion, LLM defaults
+├── verify_accuracy.py     # Video + fusion smoke / benchmark harness
 ├── modules/
-│   ├── image.py            ← ViT + ELA + EXIF
-│   ├── audio.py            ← Pitch + MFCC + Spectral
-│   ├── video.py            ← Frame AI + SSIM + ffprobe
-│   ├── url.py              ← Entropy + Homograph + DGA
-│   ├── metadata.py         ← EXIF + video container tags
-│   └── threats.py          ← Malware signature scan
-├── fusion/
-│   └── engine.py           ← Weighted decision (pure maths)
+│   ├── image.py           # Image + video-frame paths (ELA gates differ by source)
+│   ├── video.py           # Sampling, liveness, morphing components, audio extract
+│   ├── audio.py           # Detectors + sub_scores (e.g. phase spike_count)
+│   ├── url.py
+│   ├── metadata.py
+│   └── threats.py
+├── fusion/engine.py       # compute_final_score, compute_morphing_score, verdict adapter
 ├── llm/
-│   └── llm.py              ← Qwen2 explanation layer
-├── reports/
-│   └── generator.py        ← PDF dossier generator
-├── code.md                 ← Full code flow reference
-├── arc.md                  ← Architecture diagrams
-├── project.md              ← Project reference + scoring tables
-└── setup.md                ← Detailed setup guide
+│   ├── llm.py             # Ollama narrative from structured JSON brief
+│   └── report_generator.py # Alternate PDF path with Ollama section (optional)
+├── reports/generator.py   # UI “dossier” PDF generator (ReportLab)
+└── docs in repo root: ARCHITECTURE.md, ALGORITHM.md, PROJECT_SPEC.md, SETUP.md, prompt.md
 ```
 
 ---
@@ -86,9 +83,10 @@ TrueSight/
 ## Documentation
 
 | File | Purpose |
-|---|---|
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Technical blueprint and data flow |
-| [`ALGORITHM.md`](ALGORITHM.md) | "Strong Accurate" methodology and heuristics |
-| [`PROJECT_SPEC.md`](PROJECT_SPEC.md) | Scoring thresholds and weights |
-| [`SETUP.md`](SETUP.md) | Step-by-step installation guide |
-| [`prompt.md`](prompt.md) | Project DNA and onboarding prompt |
+|------|---------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Modules, fusion lifecycle, patterns |
+| [ALGORITHM.md](ALGORITHM.md) | Pipeline stages, floors, video/morphing signals |
+| [PROJECT_SPEC.md](PROJECT_SPEC.md) | Config highlights and verdict bands |
+| [SETUP.md](SETUP.md) | Install, venv, Ollama, troubleshooting |
+| [prompt.md](prompt.md) | Maintainer DNA / onboarding |
+| [workflows/optimized_forensics.md](workflows/optimized_forensics.md) | Operator-style workflow notes |

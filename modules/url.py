@@ -1,199 +1,171 @@
 """
-modules/url_ai.py — AI-Enhanced URL Analysis for app-ai.py
-
-Extends the original url.py with:
-  - tldextract for proper TLD parsing (avoids false positives from subdomains)
-  - Homograph attack detection (mixed Unicode scripts like Cyrillic + Latin)
-  - IP-based URL detection (direct IP pointing = phishing indicator)
-  - URL shortener detection (hides destination)
-  - Suspicious redirect/tracking parameter patterns
-  - Domain age check hint via length heuristics
+TrueSight — Definitive Master URL Forensics v3.0
+modules/url.py
 """
 
 import re
 import math
 import tldextract
-
-
-# Known URL shorteners
-_SHORTENERS = {
-    'bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'ow.ly', 'buff.ly',
-    'is.gd', 'rb.gy', 'cutt.ly', 'short.io', 'rebrand.ly', 'bl.ink',
-    'shorte.st', 'adf.ly', 'bc.vc', 'clck.ru', 'qps.ru'
-}
-
-# Legitimate TLDs that are commonly spoofed using similar-looking ones
-_SUSPICIOUS_TLDS = {
-    'tk', 'ml', 'ga', 'cf', 'gq',   # Free TLDs heavily abused
-    'xyz', 'top', 'click', 'loan',   # Common phishing TLDs
-    'work', 'party', 'review', 'cricket', 'science'
-}
-
-_PHISHING_KEYWORDS = [
-    'login', 'verify', 'account', 'secure', 'update', 'confirm',
-    'banking', 'paypal', 'amazon', 'apple', 'microsoft', 'google',
-    'ebay', 'netflix', 'signin', 'wallet', 'password', 'credential',
-    'suspended', 'unusual', 'alert', 'urgent', 'immediately'
-]
-
+import difflib
+from typing import Optional
+from config import CFG
 
 def _shannon_entropy(s: str) -> float:
-    if not s:
-        return 0.0
+    if not s: return 0.0
     freq = {}
-    for c in s:
-        freq[c] = freq.get(c, 0) + 1
-    return -sum((f / len(s)) * math.log2(f / len(s)) for f in freq.values())
-
-
-def _has_homograph(domain: str) -> bool:
-    """Detect mixed-script homograph attacks (e.g. Cyrillic 'а' mixed with Latin 'a')."""
-    has_latin = bool(re.search(r'[a-zA-Z]', domain))
-    has_cyrillic = bool(re.search(r'[\u0400-\u04FF]', domain))
-    has_greek = bool(re.search(r'[\u0370-\u03FF]', domain))
-    return has_latin and (has_cyrillic or has_greek)
-
-
-import difflib
-
-# High-value domains frequently targeted for spoofing
-_GOLDEN_DOMAINS = [
-    'google', 'amazon', 'paypal', 'microsoft', 'facebook', 'netflix',
-    'apple', 'icloud', 'gmail', 'outlook', 'chase', 'fidelity'
-]
-
-def _fuzzy_domain_match(domain: str) -> str:
-    """Detects visually similar (fuzzy) matches to high-value brands."""
-    for golden in _GOLDEN_DOMAINS:
-        if domain == golden:
-            return None # Exact match is fine
-        # SequenceMatcher ratio > 0.8 identifies spoofs like 'paypa1' or 'g00gle'
-        ratio = difflib.SequenceMatcher(None, domain, golden).ratio()
-        if ratio > 0.8:
-            return golden
-    return None
-
-def _is_ip_url(url: str) -> bool:
-    """Detect URLs pointing directly to IP addresses."""
-    return bool(re.search(r'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', url))
-
+    for c in s: freq[c] = freq.get(c, 0) + 1
+    return -sum((f/len(s)) * math.log2(f/len(s)) for f in freq.values())
 
 def analyze_url(url: str) -> dict:
     """
-    Enhanced URL phishing analysis with proper TLD parsing,
-    homograph detection, and richer heuristics.
+    Standard contract v3.0 for URL analysis.
     """
     score = 0
     reasons = []
-    flags = {}
-
+    features = {}
+    is_strong = False
+    
     url_lower = url.lower().strip()
     if not url_lower.startswith(('http://', 'https://')):
         url_lower = 'http://' + url_lower
 
-    # Parse with tldextract for proper subdomain/domain/TLD separation
-    extracted = tldextract.extract(url_lower)
-    domain = extracted.domain
-    tld = extracted.suffix
-    subdomain = extracted.subdomain
-    registered_domain = extracted.registered_domain
+    ext = tldextract.extract(url_lower)
+    domain = ext.domain
+    tld = ext.suffix
+    subdomain = ext.subdomain
+    reg_domain = ext.registered_domain
 
-    flags['domain'] = domain
-    flags['tld'] = tld
-    flags['subdomain'] = subdomain
+    # 1. IP-based URL (exclude localhost + RFC1918 private ranges)
+    ip_match = re.search(
+        r"https?://(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", url_lower
+    )
+    is_ip = bool(ip_match)
+    private = False
+    if ip_match:
+        octets = tuple(int(ip_match.group(i)) for i in range(1, 5))
+        a, b, c, d = octets
+        if a == 10:
+            private = True
+        elif a == 172 and 16 <= b <= 31:
+            private = True
+        elif a == 192 and b == 168:
+            private = True
+        elif a == 127:
+            private = True
+    safe_local = any(p in url_lower for p in ["127.0.0.1", "localhost", "::1"])
+    if is_ip and not safe_local and not private:
+        score += CFG.URL_IP_SCORE
+        reasons.append("[URL] direct IP address detected — high-confidence phishing anchor.")
+        is_strong = True
+        features["ip_url"] = True
 
-    # ── 1. IP-based URL ───────────────────────────────────────────────────────
-    if _is_ip_url(url_lower):
-        score += 40
-        reasons.append("URL points directly to an IP address — strong phishing indicator")
-        flags['ip_url'] = True
+    # 2. URL shortener
+    if reg_domain in CFG.URL_SHORTENERS:
+        score += CFG.URL_SHORTENER_SCORE
+        reasons.append(f"[URL] shortener detected ({reg_domain}) — obscures destination.")
+        is_strong = True
+        features['shortener'] = True
 
-    # ── 2. URL shortener ──────────────────────────────────────────────────────
-    if registered_domain in _SHORTENERS:
-        score += 35
-        reasons.append(f"URL shortener detected ({registered_domain}) — destination URL is hidden")
-        flags['shortener'] = True
+    # 3. Suspicious TLD
+    if tld in CFG.URL_SUSPICIOUS_TLDS:
+        score += CFG.URL_SUSPICIOUS_TLD_SCORE
+        reasons.append(f"[URL] suspicious TLD (.{tld}) — heavily abused for phishing.")
+        features['suspicious_tld'] = True
 
-    # ── 3. Suspicious TLD ─────────────────────────────────────────────────────
-    if tld in _SUSPICIOUS_TLDS:
-        score += 25
-        reasons.append(f"High-risk TLD: .{tld} — frequently used for phishing campaigns")
-        flags['suspicious_tld'] = True
+    # 4. Homograph attack
+    has_latin = bool(re.search(r'[a-zA-Z]', domain))
+    has_cyrillic = bool(re.search(r'[\u0400-\u04FF]', domain))
+    has_greek = bool(re.search(r'[\u0370-\u03FF]', domain))
+    if has_latin and (has_cyrillic or has_greek):
+        score += CFG.URL_HOMOGRAPH_SCORE
+        reasons.append("[URL] Homograph attack detected (mixed Unicode script).")
+        is_strong = True
+        features['homograph'] = True
 
-    # ── 4. Homograph attack ───────────────────────────────────────────────────
-    if _has_homograph(url_lower):
-        score += 45
-        reasons.append("Homograph attack detected — URL contains mixed Unicode scripts (e.g. Cyrillic + Latin)")
-        flags['homograph'] = True
-    
-    # ── 4b. Fuzzy Domain Spoofing ─────────────────────────────────────────────
-    fuzzy_match = _fuzzy_domain_match(domain)
-    if fuzzy_match:
-        score += 40
-        reasons.append(f"Fuzzy Domain Spoofing: '{domain}' is 80%+ similar to '{fuzzy_match}'")
-        flags['fuzzy_match'] = fuzzy_match
+    # 5. Fuzzy Domain Spoofing
+    is_golden = False
+    for golden in CFG.URL_GOLDEN_DOMAINS:
+        if domain == golden:
+            is_golden = True
+            break
+        ratio = difflib.SequenceMatcher(None, domain, golden).ratio()
+        if ratio >= CFG.URL_FUZZY_RATIO_MIN:
+            score += CFG.URL_FUZZY_SPOOF_SCORE
+            reasons.append(f"[URL] fuzzy domain spoofing: '{domain}' mimics '{golden}'.")
+            is_strong = True
+            features['fuzzy_spoof'] = golden
+            break
 
-    # ── 5. HTTPS check ────────────────────────────────────────────────────────
-    if not url_lower.startswith('https://'):
-        score += 15
-        reasons.append("URL uses HTTP (not HTTPS) — no transport encryption")
-        flags['no_https'] = True
+    # 6. HTTP Only
+    if not url_lower.startswith('https://') and not is_golden:
+        # Don't penalize local dev stuff too much
+        if not any(p in url_lower for p in ["localhost", "127.0.0.1"]):
+            score += CFG.URL_NO_HTTPS_SCORE
+            reasons.append("[URL] HTTP only — no transport encryption.")
 
-    # ── 6. Phishing keywords in domain ────────────────────────────────────────
-    full_domain_str = f"{subdomain}.{domain}".lower()
-    found_keywords = [kw for kw in _PHISHING_KEYWORDS if kw in full_domain_str]
-    if found_keywords:
-        score += min(30, len(found_keywords) * 10)
-        reasons.append(f"Phishing keywords in domain: {', '.join(found_keywords[:3])}")
-        flags['phishing_keywords'] = found_keywords
+    # 7. Phishing keywords
+    full_dom = f"{subdomain}.{domain}".lower()
+    found_kws = [kw for kw in CFG.URL_PHISHING_KEYWORDS if kw in full_dom]
+    if found_kws:
+        k_score = min(CFG.URL_KEYWORD_MAX, len(found_kws) * CFG.URL_KEYWORD_SCORE_PER)
+        score += k_score
+        reasons.append(f"[URL] phishing keywords detected: {', '.join(found_kws[:3])}.")
 
-    # ── 7. Domain Shannon entropy ─────────────────────────────────────────────
-    entropy = _shannon_entropy(domain)
-    flags['domain_entropy'] = round(entropy, 3)
-    if entropy > 3.8:
-        score += 20
-        reasons.append(f"High domain entropy ({entropy:.2f}) — domain appears randomly generated (DGA)")
-    elif entropy > 3.2:
-        score += 10
-        reasons.append(f"Elevated domain entropy ({entropy:.2f}) — unusual character distribution")
+    # 8. Entropy
+    ent = _shannon_entropy(domain)
+    if ent > CFG.URL_ENTROPY_HIGH:
+        score += CFG.URL_ENTROPY_HIGH_SCORE
+        reasons.append(f"[URL] high domain entropy ({ent:.2f}) — likely random DGA.")
+    elif ent > CFG.URL_ENTROPY_MED:
+        score += CFG.URL_ENTROPY_MED_SCORE
+        reasons.append(f"[URL] elevated domain entropy ({ent:.2f}).")
 
-    # ── 8. Deep subdomain nesting ─────────────────────────────────────────────
-    subdomain_depth = len(subdomain.split('.')) if subdomain else 0
-    flags['subdomain_depth'] = subdomain_depth
-    if subdomain_depth >= 3:
-        score += 20
-        reasons.append(f"Deep subdomain nesting ({subdomain_depth} levels) — often used to mimic legitimate domains")
-    elif subdomain_depth == 2:
-        score += 10
-        reasons.append(f"Multiple subdomain levels ({subdomain_depth}) — verify domain legitimacy")
+    # 9. Subdomain nesting
+    depth = len(subdomain.split('.')) if subdomain else 0
+    if depth >= 3:
+        score += CFG.URL_SUBDOMAIN_DEEP_SCORE
+        reasons.append(f"[URL] deep subdomain nesting ({depth} levels).")
+    elif depth == 2:
+        score += CFG.URL_SUBDOMAIN_MED_SCORE
+        reasons.append(f"[URL] multiple subdomain levels.")
 
-    # ── 9. Excessive URL length ───────────────────────────────────────────────
-    flags['url_length'] = len(url)
-    if len(url) > 150:
-        score += 15
-        reasons.append(f"Unusually long URL ({len(url)} chars) — often used to obscure destination")
-    elif len(url) > 100:
-        score += 8
-        reasons.append(f"Long URL ({len(url)} chars) — moderately suspicious")
+    # 10. Length
+    u_len = len(url)
+    if u_len > CFG.URL_LENGTH_LONG:
+        score += CFG.URL_LENGTH_LONG_SCORE
+        reasons.append(f"[URL] excessively long URL ({u_len} chars).")
+    elif u_len > CFG.URL_LENGTH_MED:
+        score += CFG.URL_LENGTH_MED_SCORE
+        reasons.append(f"[URL] long URL ({u_len} chars).")
 
-    # ── 10. Excessive digits in domain ────────────────────────────────────────
-    digit_ratio = sum(c.isdigit() for c in domain) / max(len(domain), 1)
-    flags['digit_ratio'] = round(digit_ratio, 3)
-    if digit_ratio > 0.35:
-        score += 15
-        reasons.append(f"High digit ratio in domain ({digit_ratio:.0%}) — unusual for legitimate domains")
+    # 11. Digit ratio + Redirect params
+    digit_ratio = sum(c.isdigit() for c in domain) / (len(domain) or 1)
+    if digit_ratio > CFG.URL_DIGIT_RATIO_MAX:
+        score += CFG.URL_DIGIT_SCORE
+        reasons.append(f"[URL] high digit ratio in domain ({digit_ratio:.1%}).")
 
-    # ── 11. Suspicious query parameters ──────────────────────────────────────
-    suspicious_params = ['redirect', 'url=', 'goto=', 'next=', 'return=', 'redir=']
-    found_params = [p for p in suspicious_params if p in url_lower]
+    found_params = [p for p in CFG.URL_REDIRECT_PARAMS if p in url_lower]
     if found_params:
-        score += 15
-        reasons.append(f"Suspicious redirect parameters in URL: {', '.join(found_params)}")
+        score += CFG.URL_REDIRECT_PARAM_SCORE
+        reasons.append(f"[URL] suspicious redirect parameters: {', '.join(found_params[:2])}.")
 
-    final_score = min(100, score)
+    final_score = float(min(100, score))
+    conf_out = 0.90
+    if features.get("homograph"):
+        conf_out = max(conf_out, 0.96)
+    if features.get("ip_url"):
+        conf_out = max(conf_out, 0.99)
+    if features.get("shortener"):
+        conf_out = max(conf_out, 0.95)
+    if features.get("fuzzy_spoof"):
+        conf_out = max(conf_out, 0.91)
+
     return {
-        'score': final_score,
-        'risk_level': 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low',
-        'reasons': reasons,
-        'features': flags
+        "score":      final_score,
+        "confidence": conf_out,
+        "is_strong":  is_strong,
+        "risk_level": "High" if final_score >= CFG.HIGH_RISK_THRESHOLD else "Medium" if final_score >= CFG.MEDIUM_RISK_THRESHOLD else "Low",
+        "reasons":    reasons,
+        "features":   features,
+        "sub_scores": {},
     }

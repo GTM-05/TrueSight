@@ -1,68 +1,68 @@
-# ⚡ TrueSight: High-Accuracy, Low-Latency Workflow
+# TrueSight — Operator workflow notes (v3.0)
 
-To achieve the deep accuracy of the **AI-Enhanced Mode** with the near-instant response of the **Ultra-Lite Mode**, we recommend the following "Hybrid Triage" workflow.
-
----
-
-## 🏛️ 1. Architecture: The Triage-First Method
-
-Instead of running heavy Machine Learning (ML) models on every file, use a multi-stage approach where we only "wake up" the expensive models if the fast heuristics detect an anomaly.
-
-### 🔄 The Three-Stage Pipeline
-
-```mermaid
-graph LR
-    Input[Input File/URL] --> Stage1[Stage 1: Fast Triage]
-    Stage1 --> Condition{Risk > 35%?}
-    Condition -- No --> Narrate[Narrative Report]
-    Condition -- Yes --> Stage2[Stage 2: Deep ML Dive]
-    Stage2 --> Narrate
-```
-
-1.  **Stage 1: Fast Triage (5-8 seconds)**
-    *   **Binary Scan**: Check magic bytes and polyglot shells (`threats.py`).
-    *   **EXIF Inspection**: Check for missing or suspicious camera metadata (`metadata.py`).
-    *   **Heuristic Signal**: Error Level Analysis (ELA) and Audio Pitch std dev.
-2.  **Stage 2: Deep ML Dive (Trigger Dependent: 15-30 seconds)**
-    *   **ViT (Vision Transformer)**: Run only if ELA Map is highly "noisy."
-    *   **SSIM Temporal**: Run only if video frame transitions are suspect.
-    *   **Full ML Reasoning**: Triggered only if Stage 1 highlights specific red flags.
+Practical workflow for **accurate** results without unnecessary load. This doc matches the **current** `app.py` tabs and engines (not legacy `app-mini` / `app-ai` names).
 
 ---
 
-## 🛠️ 2. Implementation Strategies
+## 1. Triage mindset
 
-### A. Parallel Analysis (Python)
-Currently, analysis is sequential. Using `ThreadPoolExecutor` can cut processing time by **40-60%**.
+TrueSight separates:
 
-```python
-# Proposed logic for app-ai.py
-with concurrent.futures.ThreadPoolExecutor() as executor:
-    # Kick off metadata and binary scans in the background
-    future_meta = executor.submit(check_metadata, file_path)
-    future_threat = executor.submit(scan_for_threats, file_path)
-    
-    # Run the primary heuristic in main thread
-    img_res = analyze_image_ai(file_path)
-    
-    # Collect results
-    meta_res = future_meta.result()
-    threat_res = future_threat.result()
-```
+- **Aggregate modality risk** (image / audio / video / URL scores fused in `fusion/engine.py`)  
+- **Morphing / manipulation index** (video spatial + metadata + audio phase spikes)  
+- **AI synthesis hints** (e.g. video `ai_gen_score`, image ViT path)  
+- **Threat scan** (binary / malware-style score from `threats.py`)
 
-### B. Intelligent Caching
-Since forensic files are often analyzed multiple times, we implementation a content-hash cache.
-```python
-# hash(file_content) -> results_dict cached for 24 hours
-```
-
-### C. LLM Streaming
-Instead of waiting for the full PDF generation, the LLM investigation report should **stream** to the user in the UI as it's being "thought" out.
+Use **all** relevant tabs for the artifact you care about; the **final report** only fuses modalities that have been run in the session.
 
 ---
 
-## 📅 3. Recommended Operator Workflow
+## 2. Recommended order
 
-1.  **Bulk Triage**: Run everything through `app-mini.py` first to identify "Hot" files.
-2.  **Escalation**: For files with > 60% risk from `app-mini`, re-analyze specifically in `app-ai.py`.
-3.  **Human Verification**: Use the **ELA maps** and **SSIM graphs** to manually verify the LLM's reasoning before finalizing any forensic dossier.
+1. **Malware / threats** — Run upload analysis; if the threat score is non-zero, treat the file as a security incident first.  
+2. **Primary modality** — Video file → **Video** tab; still image → **Image**; clip with suspicious audio → **Audio** too.  
+3. **URL** — If the case is link-centric, run **URL** separately.  
+4. **Final forensic report** — After populating session results, use **Generate Final Forensic Report**. Leave **Turbo** off if you want the LLM narrative (requires Ollama + pulled model).  
+
+---
+
+## 3. Resource modes
+
+| Mode | When to use |
+|------|----------------|
+| **Default** | Normal laptops / workstations |
+| **Low Resource** | RAM- or CPU-constrained hosts; fewer frames, lighter checks |
+| **Deep Scan** | Higher frame count for video when you accept longer runtime |
+| **Turbo Report** | Instant deterministic summary; **no** Qwen narrative |
+
+---
+
+## 4. Reading indicators
+
+- Raw analyzer output can emit **many** similar lines (e.g. per-frame `[ELA]`). The **video** tab uses **`display_indicators()`** to **group by tag** for readability.  
+- **Fusion expander** lists mathematical **key_findings** from merged `reasons` (trimmed).  
+
+For PDFs, tab-specific “Generate … Report” buttons use `reports/generator.py`; optional alternate PDF flow lives under `llm/report_generator.py`.
+
+---
+
+## 5. Validation
+
+- **`python verify_accuracy.py`** — Ensures video + fusion path runs on sample MP4s.  
+- **`--strict-benchmarks`** — Use when you maintain golden clips in `test_samples/`.  
+
+---
+
+## 6. Future optimizations (not required today)
+
+Ideas compatible with the current architecture:
+
+- **Parallelism** — Metadata + threat scan in a thread pool while the heavy modality runs (would need careful temp-file discipline).  
+- **Content-hash cache** — Skip re-analysis of identical uploads within a TTL.  
+- **LLM** — Already streams in the UI when not in Turbo mode; narrative quality scales with model size (`CFG.LLM_VERDICT_MODEL`).
+
+---
+
+## 7. Human-in-the-loop
+
+Heuristic and ML detectors produce **investigative** signals, not legal proof. For high-stakes cases, corroborate with **source acquisition**, chain of custody, and expert review. Use TrueSight outputs as structured starting points, not sole evidence.

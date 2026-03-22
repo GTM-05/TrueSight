@@ -1,51 +1,74 @@
-# TrueSight: Project DNA & Onboarding Prompt
+# TrueSight — Maintainer DNA & onboarding (v3.0)
 
-You are tasked with maintaining or extending **TrueSight**, a privacy-first, offline, multi-modal cyber forensic investigator.
+Use this when extending or debugging **TrueSight**: a **local, multimodal, heuristic-first** forensic UI built on Python, Streamlit, OpenCV, librosa, and optional **Ollama**.
 
-## 🧠 Core Identity & Philosophy
-TrueSight is built on the principle of **"Heuristic-First Forensics."** Unlike typical black-box AI detectors, TrueSight prioritizes mathematical "dead giveaways" (artifact signatures) across Image, Audio, Video, and Metadata. It uses lightweight, local AI (Transformers/Ollama) to *support* findings rather than act as the sole source of truth.
+---
 
-## 🛡️ The "Strong Accurate Algorithm"
-The system utilizes a multi-stage cascading filter to ensure high precision:
+## Core identity
 
-1.  **Fast Heuristics**: Laplacian variance, fixed AI resolutions, and basic metadata tags.
-2.  **Advanced Signal Processing**:
-    - **Radial Spectral Slope**: Detects 1/f² power law deviations (AI synthesis signatures).
-    - **Chromatic Alignment**: Detects suspiciously perfect R/B channel alignment.
-    - **Noise Floor Analysis**: Identifies sterile digital noise vs. natural sensor grain.
-3.  **Biological Vitality (Primary Truth)**:
-    - **CHROM-rPPG**: Heartbeat detection via chrominance-based pulse extraction (lighting-robust).
-    - **Iris Jitter**: Detection of static/frozen gaze (lack of microsaccades).
-    - **Blink Calibration**: Frequency and timing of blinks.
-4.  **Max-Biased Fusion Engine**: Anomalies are NOT averaged out. A single high-confidence threat (e.g., Grids or Pulse Anomaly) will drive the final risk score high, regardless of other clean signals.
-5.  **The Safety Floor**: Samples lacking strong forensic "anchors" are capped at **19%** (Fixed Low Risk) to eliminate "noisy accumulator" false positives.
+- **Forensic scores are not LLM outputs.** `modules/*` produce evidence; **`fusion/engine.py`** fuses them using **`config.ForensicConfig` (`CFG`)**. The LLM (`llm/llm.py`) only turns **structured facts** into prose.
+- **Explainability** — Prefer tagged **`reasons`** (e.g. `[ELA]`, `[PHASE]`, `[FACE-WARP]`) so fusion, PDFs, and grouped UI lines stay traceable.
+- **Privacy** — Default path is offline; URL analysis is the main “network” surface for the target URL itself, not for sending user media to third parties.
 
-## 🛠️ Technology Stack
-- **Framework**: Streamlit (Python)
-- **Computer Vision**: OpenCV (ROI-Face-Tracking, FFT, ELA, Flow)
-- **Audio Processing**: Librosa (Pitch Jitter, Spectral Flatness, RMS Flux)
-- **AI Backend**: 
-    - Transformers (Offline ViT-based AI Detector)
-    - Ollama (Qwen2/Phi-2 for Forensic Narrative generation)
-- **Reporting**: ReportLab (PDF)
+---
 
-## 📁 Project Structure
-- `modules/image.py`: Low-level artifact detection (ELA, Spectral, Noise).
-- `modules/video.py`: ROI-based biological scanning (Liveness, Jitter, Flow).
-- `modules/audio.py`: Vocal tract forensics (Monotonicity, Flatness).
-- `fusion/engine.py`: Weighted risk logic and Max-Biased aggregation.
-- `app.py`: Streamlit frontend and forensic triage orchestration.
+## Architecture snapshot
 
-## 🔄 Operational Workflow
-1.  **Ingestion**: User uploads Multi-modal (Video/Image/Audio) or URL.
-2.  **Preprocessing**: FFmpeg extracts audio streams and frame sequences (6fps-30ps depending on resource mode).
-3.  **Modular Analysis**: Parallel execution of `image`, `video`, and `metadata` modules.
-4.  **Biological Triage**: Face tracking isolates ROI -> CHROM-rPPG verifies heart rate -> Iris Jitter verifies gaze.
-5.  **Weighted Fusion**: `fusion/engine.py` applies the max-biased logic and safety floor caps.
-6.  **Narrative Synthesis**: Data is passed to `llm/llm.py` (Local Ollama) to generate a human-readable forensic explanation.
-7.  **Final Reporting**: Verification metadata is generated as a structured PDF.
+| Piece | Role |
+|-------|------|
+| `config.py` | Single dataclass of thresholds, fusion weights, morphing fusion, LLM defaults |
+| `modules/image.py` | Image + **video frame** analysis; **different ELA/SRM/copy-move gates** when `source="video"` |
+| `modules/video.py` | Sampling, liveness, **face SSIM morphing**, **face warp**, audio extract, **`compute_morphing_score`** |
+| `modules/audio.py` | Audio detectors; **`sub_scores`** e.g. phase **`spike_count`** for morphing |
+| `fusion/engine.py` | `compute_final_score`, `compute_morphing_score`, `generate_final_verdict_ai` |
+| `llm/llm.py` | JSON brief + Ollama generate; fallback text if unavailable |
+| `app.py` | Streamlit, **`display_indicators`**, session fusion + report |
+| `verify_accuracy.py` | Regression smoke / optional strict benchmarks |
 
-## 🎯 Developer Directives
-- **Lite over Bloat**: Avoid adding massive deep learning models. Prefer mathematical heuristics.
-- **Privacy-First**: No external API calls except for URL scanning (if enabled). Ensure `HF_HUB_OFFLINE=1`.
-- **Explainability**: Every scoring increase MUST have a corresponding string reason in the `reasons` list.
+---
+
+## Fusion v3.0 (mental model)
+
+1. **Fuse** modalities (strong detector dominates + capped weak boost, or weighted blend).  
+2. **Cross-modal penalty** if confident scores diverge too much.  
+3. **Liveness reduction** when video biology supports authenticity.  
+4. **Graduated safety floor** — not one hard-coded “19% only” story; see `SAFETY_*` in `config.py`.
+
+**Morphing** is a **parallel index** (face temporal + metadata + phase spikes), not a duplicate of raw video aggregate risk.
+
+---
+
+## Developer rules
+
+1. **No magic numbers in detectors** — Add fields to **`ForensicConfig`** and read **`CFG`**.
+2. **Preserve modality contracts** — `score`, `confidence`, `is_strong`, `reasons`, `sub_scores` / `metrics` as expected by fusion.
+3. **Video frames** — Always thread **`source="video"`** through `analyze_image` for sampled frames.
+4. **UI** — When showing long `reasons` lists, prefer **tag grouping** (`display_indicators`) for scanability.
+5. **LLM changes** — Keep prompts tied to **engine numbers**; avoid dumping hundreds of raw duplicate lines into the model context.
+
+---
+
+## Stack
+
+- **UI:** Streamlit  
+- **Vision:** OpenCV, optional scikit-image SSIM inside face ROIs  
+- **Audio:** librosa, scipy  
+- **ML:** transformers + torch (ViT-style image path)  
+- **Reports:** ReportLab (`reports/generator.py`, `llm/report_generator.py`)  
+- **Narration:** Ollama Python client; model name from **`CFG.LLM_VERDICT_MODEL`**
+
+---
+
+## Operational workflow
+
+1. User runs one or more tabs (image / audio / video / URL).  
+2. Results land in `st.session_state`.  
+3. **Generate Final Forensic Report** builds `all_evidence` and calls **`generate_final_verdict_ai`** (unless Turbo / `skip_llm`).  
+4. Optional PDF from tab-specific actions or external `generate_report` helpers.
+
+---
+
+## Quality bar
+
+- **Accurate docs** — README / ARCHITECTURE / PROJECT_SPEC / ALGORITHM / SETUP should match `config.py` and `fusion/engine.py`, not legacy v1 fusion math.
+- **Small diffs** — Fix the narrowest layer (config vs module vs fusion) for a given bug.

@@ -17,6 +17,7 @@ Requires:
 
 import streamlit as st
 import os
+import re
 import sys
 import tempfile
 import logging
@@ -40,6 +41,52 @@ from modules.video import analyze_video
 from fusion.engine import generate_final_verdict_ai
 from modules.threats import scan_for_threats
 from reports.generator import generate_pdf_report
+
+_TAG_PREFIX_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$", re.DOTALL)
+
+
+def display_indicators(reasons: list[str]) -> list[str]:
+    """
+    Collapse many identical tag-prefixed lines (e.g. per-frame [ELA]) into one summary.
+    Mixed bodies under the same tag become a single count line.
+    """
+    if not reasons:
+        return []
+    from collections import defaultdict
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    untagged: list[str] = []
+    for raw in reasons:
+        r = (raw or "").strip()
+        if not r:
+            continue
+        m = _TAG_PREFIX_RE.match(r)
+        if not m:
+            untagged.append(r)
+            continue
+        tag, _rest = m.group(1), m.group(2)
+        groups[tag].append(r)
+
+    out: list[str] = []
+    for tag in sorted(groups.keys()):
+        items = groups[tag]
+        if len(items) == 1:
+            out.append(items[0])
+            continue
+        bodies: list[str] = []
+        for it in items:
+            mm = _TAG_PREFIX_RE.match(it)
+            bodies.append((mm.group(2).strip() if mm else it).strip())
+        if len(set(bodies)) == 1:
+            out.append(f"[{tag}] ×{len(items)} — {bodies[0]}")
+        else:
+            out.append(
+                f"[{tag}] ×{len(items)} indicators "
+                f"(same class, mixed detail — frame/sample-level aggregation)."
+            )
+    out.extend(untagged)
+    return out
+
 
 # ── ViT model: cached in RAM, loads lazily on first video/image upload ────────
 @st.cache_resource(show_spinner="🧠 Loading AI detector (first run only)...")
@@ -227,17 +274,28 @@ st.markdown(
     "| 🌐 URL | Homograph detection + shortener + DGA entropy + tldextract |\n"
 )
 
+low_res = st.sidebar.checkbox(
+    "🚀 Low Resource Mode",
+    value=False,
+    help="Reduces video frame sampling; lighter image/video pipeline.",
+)
+deep_scan = st.sidebar.checkbox(
+    "🔬 Deep Forensic Scan",
+    value=False,
+    help="More video frames for rPPG / temporal analysis.",
+)
+skip_ai = st.sidebar.checkbox(
+    "📄 Turbo Report (Instant)",
+    value=False,
+    help="Bypasses LLM reasoning for instant technical summaries.",
+)
+
 tab1, tab2, tab3, tab4 = st.tabs(["🎥 Video Analysis", "🖼️ Image Analysis", "🔊 Audio Analysis", "🌐 URL Analysis"])
 
 # ── Tab 1: Video ──────────────────────────────────────────────────────────────
 with tab1:
     st.header("Video Forensic Analysis (AI-Enhanced)")
     st.write("Frame-level AI-image detection + pitch/MFCC audio analysis + SSIM temporal consistency.")
-    
-    # NEW: Low Resource Mode for 8GB RAM systems
-    low_res = st.sidebar.checkbox("🚀 Low Resource Mode", value=False, help="Enable on low-RAM systems (reduces frame sampling to 1 frame, skips SSIM).")
-    deep_scan = st.sidebar.checkbox("🔬 Deep Forensic Scan", value=False, help="Increases frame sampling density (8 frames) for maximum accuracy on long videos.")
-    skip_ai = st.sidebar.checkbox("📄 Turbo Report (Instant)", value=False, help="Bypasses LLM reasoning for instant technical report generation.")
     
     video_file = st.file_uploader("Upload a Video file", type=["mp4", "avi", "mov"])
     if video_file is not None:
@@ -254,7 +312,9 @@ with tab1:
                     st.error(f"🚨 THREAT DETECTED: {threat_res['reasons'][0]}")
 
             with st.spinner("Running AI-enhanced frame & audio analysis (Deep Scan active)..." if deep_scan else "Running standard analysis..."):
-                vid_res = analyze_video(temp_vid, low_resource=low_res, deep_scan=deep_scan)
+                vid_res = analyze_video(
+                    temp_vid, low_resource=low_res, deep_scan=deep_scan
+                )
                 vid_res['threats'] = threat_res
                 st.session_state.video_result = vid_res
 
@@ -265,7 +325,14 @@ with tab1:
                 with vcol2:
                     st.metric("🤖 AI Synthesis", f"{vid_res.get('ai_gen_score',0)}%", help="ViT-based detection of Sora/Runway synthetic generation.")
                 with vcol3:
-                    st.metric("🎭 Morphing", f"{vid_res.get('manip_score',0)}%", help="SSIM temporal inconsistency and metadata morphing indicators.")
+                    _morph = vid_res.get("morphing_score")
+                    if _morph is None:
+                        _morph = vid_res.get("manip_score", 0)
+                    st.metric(
+                        "🎭 Morphing",
+                        f"{int(round(float(_morph)))}%",
+                        help="Face ROI SSIM / warp, metadata, and audio phase discontinuities.",
+                    )
                 with vcol4:
                     if threat_res['score'] > 0:
                         st.metric("🦠 Malware Scan", f"{threat_res['score']}%")
@@ -293,7 +360,7 @@ with tab1:
 
                 if vid_res['reasons']:
                     st.write("**Suspicious Indicators:**")
-                    for reason in vid_res['reasons']:
+                    for reason in display_indicators(vid_res['reasons']):
                         st.warning(f"⚠️ {reason}")
                 else:
                     st.success("✅ No notable anomalies detected.")
@@ -308,12 +375,12 @@ with tab1:
                         'risk_level': 'High' if vid_res['score'] >= 60 else 'Medium' if vid_res['score'] >= 30 else 'Low',
                         'specific_details': {
                             'AI Synthesis Probability': f"{vid_res.get('ai_gen_score',0)}%",
-                            'Manipulation/Morphing': f"{vid_res.get('manip_score',0)}%",
+                            'Manipulation/Morphing': f"{int(round(float(vid_res.get('morphing_score', vid_res.get('manip_score', 0) or 0))))}%",
                             'Temporal Consistency (SSIM)': ssim.get('ssim_mean', 'N/A') if ssim else "Skipped",
-                            'Threat Indicators': ", ".join([r for r in vid_res['reasons']]) if vid_res['reasons'] else "None"
+                            'Threat Indicators': ", ".join(display_indicators(vid_res['reasons'])) if vid_res['reasons'] else "None"
                         },
-                        'key_findings': vid_res['reasons'],
-                        'ai_explanation': f"Video forensic audit detecting AI synthesis ({vid_res.get('ai_gen_score',0)}%) and post-production morphing ({vid_res.get('manip_score',0)}%)."
+                        'key_findings': display_indicators(vid_res['reasons']),
+                        'ai_explanation': f"Video forensic audit detecting AI synthesis ({vid_res.get('ai_gen_score',0)}%) and post-production morphing ({int(round(float(vid_res.get('morphing_score', vid_res.get('manip_score', 0) or 0))))}%)."
                     }
                     path = generate_pdf_report(vid_report_data)
                     if path:
@@ -338,7 +405,7 @@ with tab2:
                     st.error(f"🚨 THREAT DETECTED: {threat_res['reasons'][0]}")
 
             with st.spinner("Running ViT AI-image detector + ELA + metadata (may take 10–20s)..."):
-                img_res = analyze_image(temp_img_path, low_resource=low_res)
+                img_res = analyze_image(temp_img_path, source="image")
                 meta_res = check_metadata(temp_img_path)
 
                 # Weight towards AI-detection score if model was used
@@ -352,16 +419,24 @@ with tab2:
                 else:
                     combined_score = int(max_component * 0.8 + min_component * 0.2)
 
+                meta_s = float(meta_res.get("score", 0) or 0)
+                img_conf = float(img_res.get("confidence", 0.5) or 0.5)
+                meta_conf = 0.55 if meta_s > 0 else 0.35
                 st.session_state.image_result = {
-                    'score': combined_score,
-                    'visual_score': img_res['score'],
-                    'meta_score': meta_res['score'],
-                    'reasons': img_res['reasons'] + meta_res['reasons'],
-                    'ela_metrics': img_res.get('metrics', {}),
-                    'ai_detection': img_res.get('ai_detection', {}),
-                    'exif': meta_res.get('metadata', {}),
-                    'ela_map': img_res.get('ela_map'),
-                    'threats': threat_res,
+                    "score": combined_score,
+                    "confidence": round((img_conf + meta_conf) / 2.0, 2),
+                    "is_strong": bool(
+                        img_res.get("is_strong", False) or meta_s >= 60
+                    ),
+                    "visual_score": img_res["score"],
+                    "meta_score": meta_res["score"],
+                    "reasons": img_res["reasons"] + meta_res["reasons"],
+                    "sub_scores": img_res.get("sub_scores", {}),
+                    "ela_metrics": img_res.get("metrics", {}),
+                    "ai_detection": img_res.get("ai_detection", {}),
+                    "exif": meta_res.get("metadata", {}),
+                    "ela_map": img_res.get("ela_map"),
+                    "threats": threat_res,
                 }
 
                 st.subheader("Image Analysis Results")
@@ -445,10 +520,13 @@ with tab3:
                 aud_res = analyze_audio(temp_aud_path)
 
                 st.session_state.audio_result = {
-                    'score': aud_res['score'],
-                    'reasons': aud_res['reasons'],
-                    'metrics': aud_res.get('metrics', {}),
-                    'threats': threat_res,
+                    "score": aud_res["score"],
+                    "confidence": float(aud_res.get("confidence", 0.5) or 0.5),
+                    "is_strong": bool(aud_res.get("is_strong", False)),
+                    "reasons": aud_res["reasons"],
+                    "sub_scores": aud_res.get("sub_scores", {}),
+                    "metrics": aud_res.get("metrics", {}),
+                    "threats": threat_res,
                 }
 
                 st.subheader("Audio Analysis Results")
@@ -511,9 +589,12 @@ with tab4:
                 result = analyze_url(url_input)
 
                 st.session_state.url_result = {
-                    'score': result['score'],
-                    'reasons': result['reasons'],
-                    'features': result.get('features', {}),
+                    "score": result["score"],
+                    "confidence": float(result.get("confidence", 0.9) or 0.9),
+                    "is_strong": bool(result.get("is_strong", False)),
+                    "reasons": result["reasons"],
+                    "features": result.get("features", {}),
+                    "sub_scores": result.get("sub_scores", {}),
                 }
 
                 st.subheader("Analysis Results")
@@ -604,10 +685,22 @@ if st.button("Generate Final Forensic Report (CPU-Optimized Fusion)", type="prim
                     
                     if not skip_ai:
                         st.write("🧠 AI Analyst Expert Mode (Streaming)...")
-                        def generator():
-                            for chunk in verdict['ai_explanation']:
-                                yield chunk['response']
-                        ai_explanation = st.write_stream(generator)
+                        explanation_data = verdict.get('ai_explanation', 'No analysis available.')
+                        
+                        if isinstance(explanation_data, str):
+                            ai_explanation = explanation_data
+                            st.info(ai_explanation)
+                        else:
+                            def generator():
+                                try:
+                                    for chunk in explanation_data:
+                                        if isinstance(chunk, dict) and 'response' in chunk:
+                                            yield chunk['response']
+                                        else:
+                                            yield str(chunk)
+                                except Exception as e:
+                                    yield f"\n[Streaming Error: {str(e)}]"
+                            ai_explanation = st.write_stream(generator)
                     else:
                         ai_explanation = verdict.get('ai_explanation', 'AI Bypassed.')
                         st.info(ai_explanation)

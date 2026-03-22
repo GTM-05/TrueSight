@@ -1,103 +1,71 @@
-# TrueSight — Project Reference
+# TrueSight — Project reference (v3.0)
 
 ## Overview
-TrueSight is a **local, offline AI-powered cyber forensics tool** for detecting AI-generated, manipulated, or suspicious media. It runs entirely on-device using Qwen2 (0.5B) via Ollama.
+
+TrueSight is a **local, offline-first** multimodal forensic assistant. **Numeric risk is produced by deterministic code** (`modules/*`, `fusion/engine.py`, `config.py`). **Ollama / Qwen** is used only to turn structured outputs into prose (and can be bypassed with “Turbo Report” in the UI).
 
 ---
 
-## 2. Decision Intelligence
+## Fusion engine (`fusion/engine.py`)
 
-### A. Modular Analysis
-Each module (Image, Audio, Video, URL) returns a score from **0 to 100**.
+Version 3.0 uses a **fixed four-step pipeline** (not the legacy weighted max/avg formula):
 
-### B. Max-Biased Fusion (`fusion/engine.py`)
-To prevent dangerous AI signals from being averaged out by clean signals in other modalities, TrueSight uses a **Max-Biased Fusion** logic:
+1. **`fuse_module_results`** — If any modality is **strong** (`is_strong` and confidence > 0.5), the fused score is anchored on the strongest detector plus a **capped weak-signal boost** (`FUSION_BOOST_MULTIPLIER`, `FUSION_BOOST_MAX`). Otherwise a **confidence-weighted** blend of active detectors.
+2. **`cross_modal_penalty`** — When at least two modalities have confidence > 0.4, large **spread** between their scores adds a penalty (deepfake substitution pattern). Constants: `CROSS_MODAL_SPREAD_*`, `CROSS_MODAL_PENALTY_MAX`.
+3. **`apply_liveness_reduction`** — If video liveness suggests a real subject, the raw fused score is **multiplied down** (full vs partial confirmation). See `LIVENESS_*` in `config.py`.
+4. **`apply_safety_floor`** — **Graduated** floors: strong/medium anchors raise minimum risk; weak evidence can be **capped** toward `SAFETY_FLOOR_RESULT` when below `SAFETY_CAP_SCORE_LIMIT`. Replaces a single global “always 19%” story.
 
-1. **Calculate Weighted Baseline**:
-   `weighted_avg = (0.35×Img + 0.25×Aud + 0.25×Vid + 0.15×URL)`
-2. **Determine Peak Suspicion**:
-   `max_score = max(Img, Aud, Vid, URL, Vid_Flicker, Vid_LipSync)`
-3. **Biased Final Score**:
-   - If `max_score ≥ 60`: `Final = max_score × 0.9 + (weighted_avg × 0.1)`
-   - If `max_score ≥ 30`: `Final = max_score × 0.7 + (weighted_avg × 0.3)`
-   - Otherwise: `Final = weighted_avg`
+Outputs include **`verdict`** (`HIGH` / `MEDIUM` / `LOW RISK` strings), **`sub_scores`** per modality, merged **`reasons`**, and flags such as **`liveness_detected`**.
 
-### C. The 19% Safety Floor
-If the `Final Score < 75` and no **Strong Forensic Anchors** (FFT Grids, High ViT, or Pulse Anomaly) are found, the score is capped at **19% (Low Risk)**.
+**Morphing index (video-centric):** `compute_morphing_score(video_result, audio_result)` blends face SSIM morph score, face warp, scaled metadata score, and **phase spike_count** from audio `sub_scores`. The **final multimodal verdict** exposes **`morphing_score`** from the video payload after fusion (see `generate_final_verdict_ai`).
 
 ---
 
-## 3. Forensic Thresholds (ForensicConfig)
+## Verdict bands (`ForensicConfig`)
 
-| Constant | Value | Role |
-|---|---|---|
-| `AI_SYNTH_STRONG` | 45% | Definitive AI probability threshold. |
-| `GRID_PEAK_RATIO` | 120 | FFT Spectral Peak sensitivity. |
-| `SPECTRAL_SLOPE` | -2.2 | Expected power law for natural images. |
-| `CHROM_ALIGN_MIN` | 2.5 | Minimum channel misalignment for real sensors. |
-| `SAFETY_CAP_LIMIT` | 75% | Threshold for applying the noise floor. |
-| `SAFETY_CAP_VAL` | 19% | Final low-risk score for noise. |
+| Final score | UI / short label |
+|-------------|------------------|
+| ≥ `HIGH_RISK_THRESHOLD` (60) | High |
+| ≥ `MEDIUM_RISK_THRESHOLD` (30) | Medium |
+| Below 30 | Low |
 
 ---
 
-## Scoring Thresholds
+## Config highlights (`config.py` → `CFG`)
 
-### Fusion Engine
-| Score | Verdict |
-|---|---|
-| ≥ 60% | 🔴 **High Risk** |
-| 30–59% | 🟡 **Medium Risk** |
-| < 30% | 🟢 **Low Risk** |
+Single dataclass **`ForensicConfig`** holds tunables. Examples:
 
-### Confidence Formula
-```python
-confidence = abs((final_score / 100.0) - 0.5) * 2 * 100
-```
+| Area | Examples | Role |
+|------|-----------|------|
+| Image ELA | `ELA_MEAN_THRESHOLD`, `ELA_STD_THRESHOLD` | Standalone JPEGs / PNGs |
+| Video frames | `ELA_MEAN_THRESHOLD_VIDEO`, `ELA_STD_THRESHOLD_VIDEO` | FFmpeg frames run hotter — separate gates |
+| Face SSIM | `SSIM_FACE_*`, `SSIM_FACE_MORPH_*` | Dual pathology: too-stable vs too-variable |
+| Face warp | `OPTICAL_FLOW_WARP_THRESHOLD`, `FACE_WARP_*` | ROI optical flow |
+| Morphing fusion | `MORPHING_META_*`, `MORPHING_PHASE_*`, `MORPHING_SPATIAL_WEIGHT` | Unified morph index |
+| rPPG | `RPPG_SNR_MIN`, `RPPG_SNR_ANOMALY`, `MIN_LIVENESS_*` | Pulse reliability guards |
+| LLM | `LLM_VERDICT_MODEL`, `LLM_VERDICT_NUM_PREDICT`, `LLM_VERDICT_MIN_CHARS` | Ollama narrative |
 
-### Image Scoring (ViT)
-| AI Probability | Points Added |
-|---|---|
-| ≥ 80% | +80 (CRITICAL) |
-| ≥ 50% | +55 (Strong signal) |
-| ≥ 35% | +35 (Moderate) |
-| ≥ 20% | +15 (Weak) |
-
-### Video Multi-Frame Bonus
-| Frames Flagged (≥40%) | Bonus |
-|---|---|
-| 3+ of 3+ frames | +20 (Consistency Bonus) |
-| 2+ of 2+ frames | +10 |
+Adjust **only `config.py`** for thresholds unless you are changing detector logic.
 
 ---
 
-## Key Design Decisions
+## Scores shown in the UI
 
-1. **LLM is explanation-only** — prevents hallucinated verdicts
-2. **Lazy model loading** — ViT loaded once, cached globally to save RAM
-3. **Weight redistribution** — if ffmpeg/ffprobe unavailable, visual evidence takes full weight
-4. **tempfile for uploads** — no CWD collision, safe across restarts
-5. **Low Resource Mode** — checkbox in sidebar reduces to 1 frame + skips SSIM
+- **Total video risk** — Aggregated frame + rPPG + sync + metadata reasons (not the same as morphing-only).
+- **AI synthesis (video)** — `ai_gen_score` (e.g. percentile of frame-level scores).
+- **Morphing** — `morphing_score` / manipulation index from spatial + metadata + phase.
+- **Final forensic report** — `generate_final_verdict_ai` merges session modalities; **`ai_generated_score`** uses max of image score, audio score, and video **`ai_gen_score`** (or video aggregate if synthesis score unset).
 
 ---
 
-## Dependencies
-```
-streamlit         — UI
-transformers      — ViT AI image detection
-torch             — Model inference backbone
-Pillow            — Image loading + ELA
-numpy             — Signal math
-librosa           — Audio feature extraction
-scikit-image      — SSIM computation
-opencv-python     — Frame extraction (replaces MoviePy)
-exifread          — EXIF metadata parsing
-tldextract        — URL domain parsing
-reportlab         — PDF generation
-ollama            — Qwen2 (0.5B) inference client
-```
+## Dependencies (typical)
 
-### System Tools Required
-```bash
-sudo apt install ffmpeg   # Audio extraction + video metadata (ffprobe included)
-ollama pull qwen2:0.5b    # LLM explanation layer (Lite)
-```
+`streamlit`, `torch`, `transformers`, `opencv-python`, `numpy`, `scipy`, `librosa`, `scikit-image`, `Pillow`, `tldextract`, `exifread`, `reportlab`, `ollama` (Python client), `ffmpeg` / `ffprobe` on PATH.
+
+---
+
+## Related files
+
+- **`verify_accuracy.py`** — Smoke / optional strict benchmarks on `test_samples/*.mp4`.
+- **`reports/generator.py`** — Premium dossier PDF from tab-specific dicts.
+- **`llm/report_generator.py`** — Alternative compact PDF that can call Ollama with a simpler prompt.
