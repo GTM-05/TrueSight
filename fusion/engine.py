@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-import numpy as np
-
 from config import CFG
 from llm.llm import llm_generate_explanation
 
@@ -90,9 +88,11 @@ def cross_modal_penalty(
 
 
 def apply_liveness_reduction(
-    raw_score: float, liveness: dict[str, Any]
+    raw_score: float, liveness: dict[str, Any], all_signals: list[dict]
 ) -> tuple[float, list[str]]:
-    """FIX-8: After fusion, before safety floor."""
+    """
+    FIX-2: Liveness reduction must be GATED on other signals.
+    """
     if not liveness.get("liveness_detected"):
         return raw_score, []
 
@@ -101,18 +101,34 @@ def apply_liveness_reduction(
     jitter = float(liveness.get("iris_jitter", 0.0) or 0.0)
     conf = float(liveness.get("confidence", 0.5) or 0.5)
 
-    if pulse and blinks >= 2 and jitter > CFG.IRIS_JITTER_MIN:
-        factor = CFG.LIVENESS_CONFIRMED_FACTOR
+    # Count how many OTHER detectors fired (not liveness itself)
+    other_fired = sum(
+        1
+        for s in all_signals
+        if float(s.get("score", 0) or 0) > 20
+        and "liveness" not in str(s.get("reasons", "")).lower()
+    )
+
+    # FIX-2: If other signals are firing, heavily limit liveness reduction
+    if other_fired >= 2:
+        factor = float(CFG.LIVENESS_MAX_REDUCTION_WITH_OTHER_SIGNALS)
         msg = (
-            f"Full liveness confirmed (pulse + {blinks} blinks + iris jitter={jitter:.2f}) — 90% reduction"
+            f"Partial liveness reduction only — {other_fired} other forensic "
+            f"signals active. 30% reduction applied (face-swap pattern)."
         )
+    elif other_fired == 1:
+        factor = 0.60  # 40% reduction
+        msg = f"Limited liveness reduction — 1 other signal active. 40% reduction applied."
+    elif pulse and blinks >= 2 and jitter > float(CFG.IRIS_JITTER_MIN):
+        factor = float(CFG.LIVENESS_CONFIRMED_FACTOR)
+        msg = "Full liveness confirmed, no other signals — 90% reduction applied."
     elif pulse or blinks >= 1:
-        factor = CFG.LIVENESS_PARTIAL_FACTOR
-        msg = f"Partial liveness (pulse={pulse}, blinks={blinks}) — 50% reduction"
+        factor = float(CFG.LIVENESS_PARTIAL_FACTOR)
+        msg = f"Partial liveness (pulse={pulse}, blinks={blinks}) — 50% reduction."
     else:
         return raw_score, []
 
-    reduced = max(raw_score * factor * conf, CFG.LIVENESS_MIN_FLOOR)
+    reduced = max(raw_score * factor * conf, float(CFG.LIVENESS_MIN_FLOOR))
     return reduced, [f"[LIVENESS] {msg}"]
 
 
@@ -146,36 +162,111 @@ def compute_morphing_score(video_result: dict[str, Any], audio_result: dict[str,
 def apply_safety_floor(
     raw_score: float, signals: list[dict], reasons: list[str]
 ) -> float:
-    """FIX-2: Graduated floor; score ≥ cap → no floor."""
-    has_strong = any(
-        s.get("is_strong") and float(s.get("confidence", 0) or 0) > 0.5 for s in signals if s
-    )
-    has_medium = any(
-        float(s.get("score", 0) or 0) > 40 and float(s.get("confidence", 0) or 0) > 0.35
+    """
+    FIX-1: Accumulation-aware graduated safety floor.
+    """
+    fired_strong = [
+        s
         for s in signals
-        if s
-    )
+        if s and s.get("is_strong") and float(s.get("confidence", 0) or 0) > 0.4
+    ]
+    fired_medium = [
+        s
+        for s in signals
+        if s and float(s.get("score", 0) or 0) > 25 and float(s.get("confidence", 0) or 0) > 0.3
+    ]
+    fired_weak = [
+        s for s in signals if s and 10 < float(s.get("score", 0) or 0) <= 25
+    ]
+
+    fired_count = len(fired_medium) + len(fired_weak)
+
+    # Hard floor from strongest single signal
+    if fired_strong:
+        max_strong = max(float(s.get("score", 0) or 0) for s in fired_strong)
+        hard_floor = max_strong * 0.65
+        raw_score = max(raw_score, hard_floor)
 
     if raw_score >= CFG.SAFETY_CAP_SCORE_LIMIT:
         return raw_score
 
-    if has_strong:
+    if fired_strong:
         return max(raw_score, CFG.SAFETY_FLOOR_STRONG)
 
-    if has_medium:
-        ev_max = max(
-            (float(s["score"]) for s in signals if s and float(s.get("score", 0) or 0) > 40),
-            default=40.0,
+    # FIX-1: Accumulation floor
+    if fired_count >= 4:
+        reasons.append(
+            f"[ACCUM] {fired_count} detectors fired simultaneously — accumulation pattern."
         )
-        floor = CFG.SAFETY_FLOOR_MEDIUM_BASE + (ev_max - 40.0) * 0.5
+        return max(raw_score, float(CFG.ACCUM_FLOOR_4_PLUS))
+
+    if fired_count >= 3:
+        return max(raw_score, float(CFG.ACCUM_FLOOR_3))
+
+    if fired_count >= 2:
+        return max(raw_score, float(CFG.ACCUM_FLOOR_2))
+
+    if fired_medium:
+        ev_max = max(float(s["score"]) for s in fired_medium)
+        floor = CFG.SAFETY_FLOOR_MEDIUM_BASE + (ev_max - 25.0) * 0.4
         return max(raw_score, min(floor, CFG.SAFETY_FLOOR_MEDIUM_MAX))
 
-    capped = min(raw_score, CFG.SAFETY_FLOOR_RESULT)
-    if raw_score > capped:
-        reasons.append(
-            "[FLOOR] Safety floor applied — no forensic anchors detected."
+    reasons.append("[FLOOR] Safety floor — no forensic anchors detected.")
+    return CFG.SAFETY_FLOOR_RESULT
+
+
+def _morphing_tagged_reasons(video_result: dict, audio_result: dict) -> list[str]:
+    out: list[str] = []
+    for r in video_result.get("reasons") or []:
+        if not isinstance(r, str):
+            continue
+        if any(
+            t in r
+            for t in (
+                "[FACE-SSIM]",
+                "[FACE-WARP]",
+                "[MORPH",
+                "[META",
+                "[AV-SYNC]",
+            )
+        ):
+            out.append(r)
+    for r in audio_result.get("reasons") or []:
+        if isinstance(r, str) and ("[PHASE]" in r or "phase discontinu" in r.lower()):
+            out.append(r)
+    return out[:14]
+
+
+def build_morphing_modality_result(
+    video_result: dict[str, Any], audio_result: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    First-class morphing modality for fusion: score from video pipeline,
+    confidence high when non-zero, is_strong when index is definitive.
+    """
+    mor = float(video_result.get("morphing_score", 0) or 0)
+    mor_c = (
+        float(CFG.MORPHING_MODALITY_CONFIDENCE)
+        if mor > 0
+        else 0.22
+    )
+    spikes = int(
+        ((audio_result.get("sub_scores") or {}).get("phase") or {}).get("spike_count", 0)
+        or 0
+    )
+    is_strong = bool(
+        mor >= float(CFG.MORPHING_IS_STRONG_THRESHOLD)
+        or (
+            mor >= float(CFG.MORPHING_STRONG_WITH_PHASE_MIN_SCORE)
+            and spikes >= int(CFG.MORPHING_STRONG_PHASE_SPIKE_MIN)
         )
-    return capped
+    )
+    return {
+        "morphing_score": mor,
+        "confidence": mor_c,
+        "is_strong": is_strong,
+        "reasons": _morphing_tagged_reasons(video_result, audio_result),
+    }
 
 
 def compute_final_score(
@@ -183,20 +274,40 @@ def compute_final_score(
     audio_result: dict,
     video_result: dict,
     liveness_result: dict,
+    morphing_result: Optional[dict[str, Any]] = None,
     url_result: Optional[dict] = None,
 ) -> dict:
-    """Run the 4-step pipeline; returns unified analysis dict."""
+    """Fuse modalities including morphing index; morph anchor can bypass safety floor."""
+    morphing_result = morphing_result or {
+        "morphing_score": 0.0,
+        "confidence": 0.2,
+        "is_strong": False,
+        "reasons": [],
+    }
+
     img_s = float(image_result.get("score", 0) or 0)
     img_c = float(image_result.get("confidence", 0.5) or 0.5)
     aud_s = float(audio_result.get("score", 0) or 0)
     aud_c = float(audio_result.get("confidence", 0.5) or 0.5)
     vid_s = float(video_result.get("score", 0) or 0)
     vid_c = float(video_result.get("confidence", 0.5) or 0.5)
+    mor_s = float(morphing_result.get("morphing_score", 0) or 0)
+    mor_c = float(morphing_result.get("confidence", 0.8) or 0.8)
+
+    morphing_is_strong = bool(morphing_result.get("is_strong", False)) or (
+        mor_s >= float(CFG.MORPHING_IS_STRONG_THRESHOLD)
+    )
 
     detector_map: dict[str, Any] = {
         "image": image_result,
         "audio": audio_result,
         "video": video_result,
+        "morphing": {
+            "score": mor_s,
+            "confidence": mor_c if mor_s > 0 else 0.2,
+            "is_strong": morphing_is_strong,
+            "reasons": list(morphing_result.get("reasons") or []),
+        },
     }
     if url_result:
         detector_map["url"] = url_result
@@ -208,7 +319,8 @@ def compute_final_score(
     )
     raw = min(raw + penalty, 100.0)
 
-    raw, liveness_reasons = apply_liveness_reduction(raw, liveness_result)
+    all_signals = [v for v in detector_map.values() if v]
+    raw, liveness_reasons = apply_liveness_reduction(raw, liveness_result, all_signals)
 
     all_reasons: list[str] = []
     all_reasons.extend(image_result.get("reasons") or [])
@@ -220,8 +332,41 @@ def compute_final_score(
     if penalty_reason:
         all_reasons.append(penalty_reason)
 
-    all_signals = [v for v in detector_map.values() if v]
-    final = apply_safety_floor(raw, all_signals, all_reasons)
+    if morphing_is_strong:
+        anchored = max(
+            raw,
+            mor_s * float(CFG.MORPHING_ANCHOR_SCORE_FRACTION),
+        )
+        final = min(100.0, anchored)
+        all_reasons.insert(
+            0,
+            f"[MORPH-ANCHOR] Strong morphing index ({mor_s:.0f}%) — "
+            f"safety floor bypassed; fused score anchored at ≥ "
+            f"{mor_s * float(CFG.MORPHING_ANCHOR_SCORE_FRACTION):.0f}%.",
+        )
+    else:
+        final = apply_safety_floor(raw, all_signals, all_reasons)
+
+    final = min(100.0, float(final))
+
+    active_confs: list[float] = []
+    for s, c in (
+        (img_s, img_c),
+        (aud_s, aud_c),
+        (vid_s, vid_c),
+        (mor_s, mor_c),
+    ):
+        if s > 0 or c > 0.3:
+            active_confs.append(float(c))
+    if url_result:
+        url_s = float(url_result.get("score", 0) or 0)
+        url_c = float(url_result.get("confidence", 0.5) or 0.5)
+        if url_s > 0 or url_c > 0.3:
+            active_confs.append(url_c)
+
+    overall_confidence = (
+        float(sum(active_confs) / len(active_confs)) if active_confs else 0.3
+    )
 
     verdict = (
         "HIGH RISK"
@@ -231,19 +376,25 @@ def compute_final_score(
         else "LOW RISK"
     )
 
+    url_s_out = float(url_result.get("score", 0) or 0) if url_result else 0.0
+
     return {
         "score": round(final, 1),
         "verdict": verdict,
+        "confidence": round(overall_confidence, 3),
         "reasons": all_reasons,
         "sub_scores": {
             "image": img_s,
             "audio": aud_s,
             "video": vid_s,
-            "url": float(url_result.get("score", 0) or 0) if url_result else 0.0,
+            "morphing": mor_s,
+            "url": url_s_out,
         },
         "liveness_detected": bool(liveness_result.get("liveness_detected", False)),
         "raw_pre_floor": round(raw, 1),
         "cross_modal_penalty": round(penalty, 1),
+        "morphing_score": mor_s,
+        "manipulation_score": mor_s,
     }
 
 
@@ -288,9 +439,9 @@ def generate_final_verdict_ai(
         "confidence": float(vid.get("metrics", {}).get("liveness_confidence", 0.5) or 0.5),
     }
 
-    fusion = compute_final_score(img, aud, vid, liveness, url)
-    morphing_score = int(round(float(vid.get("morphing_score", 0) or 0)))
-    fusion["morphing_score"] = float(morphing_score)
+    morphing_mod = build_morphing_modality_result(vid, aud)
+    fusion = compute_final_score(img, aud, vid, liveness, morphing_mod, url)
+    morphing_score = int(round(float(fusion.get("morphing_score", 0) or 0)))
     final_score = int(round(fusion["score"]))
     verdict_short = (
         "High"
@@ -300,8 +451,7 @@ def generate_final_verdict_ai(
         else "Low"
     )
 
-    modality_confs = [c for c in [img.get("confidence"), aud.get("confidence"), vid.get("confidence"), (url or {}).get("confidence")] if c is not None]
-    overall_conf = int(float(np.mean(modality_confs)) * 100) if modality_confs else 50
+    overall_conf = int(round(float(fusion.get("confidence", 0.3) or 0.3) * 100))
 
     use_model = model or CFG.LLM_VERDICT_MODEL
 
@@ -316,10 +466,9 @@ def generate_final_verdict_ai(
     else:
         ai_explanation = llm_generate_explanation(
             all_evidence,
-            fusion,
             final_score,
             verdict_short,
-            overall_conf,
+            fusion.get("reasons", []),
             model=use_model,
             stream=stream,
         )

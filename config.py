@@ -104,6 +104,16 @@ class ForensicConfig:
     MORPHING_PHASE_POINTS_PER_SPIKE: float = 0.09
     MORPHING_PHASE_SCORE_CAP: float = 48.0
     MORPHING_SPATIAL_WEIGHT: float = 1.0
+    # Fusion: morphing as its own modality + anchor when definitive
+    MORPHING_IS_STRONG_THRESHOLD: float = 50.0
+    MORPHING_MODALITY_CONFIDENCE: float = 0.82
+    MORPHING_ANCHOR_SCORE_FRACTION: float = 0.85
+    # is_strong if morphing in [MIN, THRESH) but phase spikes prove splices
+    MORPHING_STRONG_WITH_PHASE_MIN_SCORE: float = 35.0
+    MORPHING_STRONG_PHASE_SPIKE_MIN: int = 80
+    # Safety floor: strongest is_strong signal never crushed below ratio * score
+    SAFETY_HARD_FLOOR_STRONG_CONF: float = 0.4
+    SAFETY_HARD_FLOOR_RATIO: float = 0.60
 
     # ── ViT — FIX-7: raised threshold, requires frame agreement ───────────
     VIT_STRONG_THRESHOLD_IMAGE: float = 45.0
@@ -185,13 +195,46 @@ class ForensicConfig:
     LACK_OF_DATA_PENALTY: int = 15
 
     # ── LLM verdict narrative (Ollama / Qwen) ────────────────────────────
-    # qwen2:0.5b is fast but often incoherent; qwen2.5:3b or qwen2:1.5b recommended.
-    LLM_VERDICT_MODEL: str = "qwen2.5:3b"
-    LLM_VERDICT_NUM_PREDICT: int = 640
-    LLM_VERDICT_TEMPERATURE: float = 0.15
+    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
+    # Default small model; larger tags tried if missing (see llm/llm.py).
+    LLM_VERDICT_MODEL: str = "qwen2:0.5b"
+    LLM_VERDICT_FALLBACK_MODELS: tuple = ("qwen2:0.5b", "qwen2:latest", "qwen2.5:3b")
+    LLM_VERDICT_NUM_PREDICT: int = 220        # Reduced for faster throughput
+    LLM_VERDICT_NUM_CTX: int = 2048
+    LLM_VERDICT_TEMPERATURE: float = 0.12     # Slightly more deterministic
     LLM_VERDICT_TOP_P: float = 0.9
+    LLM_PRELOAD_ON_START: bool = True        # New: Preload model into VRAM/RAM
     # Minimum length for --check-llm / quality heuristic (not a hard science)
-    LLM_VERDICT_MIN_CHARS: int = 180
+    LLM_VERDICT_MIN_CHARS: int = 150         # Lowered to match shorter prediction
+
+    # ── ACCURACY FIXES ────────────────────────────────────────────────────
+    # ELA constants
+    ELA_PERSIST_FRAME_RATIO: float = 0.50
+    ELA_PERSIST_MEAN_MIN: float = 20.0
+    ELA_PERSIST_STRONG_RATIO: float = 0.60
+
+    # SRM thresholds for video
+    SRM_CLEAN_STD_VIDEO: float = 2.0    #Strict std for video
+    SRM_KURTOSIS_VIDEO: float = 200.0  #H.264 DCT baseline check
+    SRM_VIDEO_MIN_AGREE: int = 2       #Require 2 of 3 filters
+
+    # Face boundary / Color
+    BLEND_RATIO_HIGH: float = 2.8      # Lowered from 3.5 for better sensitivity
+    BLEND_RATIO_LOW: float = 0.3
+    BLEND_MILD_RATIO: float = 2.2      # Lowered from 2.5
+    COLOR_DELTA_E_STRONG: float = 15.0 # Lowered from 18.0
+    COLOR_DELTA_E_MEDIUM: float = 9.0  # Lowered from 12.0
+
+    # Cross-Detector Consensus (CDC) Boost
+    CONSENSUS_MIN_DETECTORS: int = 3
+    CONSENSUS_BOOST_ADDITIVE: float = 25.0
+    CONSENSUS_SCORE_FLOOR: float = 65.0
+
+    # Floors
+    ACCUM_FLOOR_4_PLUS: float = 45.0
+    ACCUM_FLOOR_3: float = 35.0
+    ACCUM_FLOOR_2: float = 28.0
+    LIVENESS_MAX_REDUCTION_WITH_OTHER_SIGNALS: float = 0.70
 
     # ── VERDICT BANDS ─────────────────────────────────────────────────────
     HIGH_RISK_THRESHOLD: float = 60.0

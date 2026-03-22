@@ -41,8 +41,68 @@ from modules.video import analyze_video
 from fusion.engine import generate_final_verdict_ai
 from modules.threats import scan_for_threats
 from reports.generator import generate_pdf_report
+from llm.llm import llm_preload_model
+from config import CFG
 
 _TAG_PREFIX_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$", re.DOTALL)
+
+
+
+def compute_liveness_result(video_res: dict) -> dict:
+    """
+    Ensure liveness is only 'Detected' when at least rPPG ran successfully.
+    """
+    liveness_block = video_res.get("liveness", {})
+    rppg_skipped = liveness_block.get("skip_reason") is not None
+    pulse_ok = liveness_block.get("pulse_confirmed", False)
+    blink_count = liveness_block.get("blink_count", 0)
+    iris_jitter = liveness_block.get("iris_jitter", 0.0)
+
+    if rppg_skipped:
+        return {
+            "liveness_detected": False,
+            "pulse_confirmed": False,
+            "blink_count": blink_count,
+            "iris_jitter": iris_jitter,
+            "confidence": 0.2,
+            "display": "Insufficient Data",
+        }
+
+    liveness_ok = pulse_ok or (blink_count >= 2 and iris_jitter > 0.3)
+    return {
+        "liveness_detected": liveness_ok,
+        "pulse_confirmed": pulse_ok,
+        "blink_count": blink_count,
+        "iris_jitter": iris_jitter,
+        "confidence": liveness_block.get("confidence", 0.5),
+        "display": "Detected" if liveness_ok else "Not Detected",
+    }
+
+
+def display_reasoning(analysis: dict, container):
+    """
+    Display reasoning in the UI — fast, no streaming, no JSON dumps.
+    """
+    from llm.llm import generate_reasoning
+    with container:
+        with st.spinner("Generating forensic explanation..."):
+            narrative = generate_reasoning(
+                analysis,
+                use_ollama=True,
+            )
+
+        paragraphs = [p.strip() for p in narrative.split("\n\n") if p.strip()]
+        st.markdown("#### AI Analyst: Forensic Explanation")
+        labels = [
+            "Overall risk assessment",
+            "Forensic evidence summary",
+            "Recommended action",
+        ]
+        for i, para in enumerate(paragraphs[:3]):
+            label = labels[i] if i < len(labels) else f"Section {i+1}"
+            with st.expander(label, expanded=True):
+                st.write(para)
+        return narrative
 
 
 def display_indicators(reasons: list[str]) -> list[str]:
@@ -88,10 +148,20 @@ def display_indicators(reasons: list[str]) -> list[str]:
     return out
 
 
-# ── ViT model: cached in RAM, loads lazily on first video/image upload ────────
+# ── Cache Resources ─────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="🧠 Loading AI detector (first run only)...")
 def _get_detector():
     return _load_detector()
+
+@st.cache_resource(show_spinner="🧠 Pre-loading LLM Analyst (Forensic Narrative)...")
+def _preload_llm():
+    if CFG.LLM_PRELOAD_ON_START:
+        return llm_preload_model()
+    return False
+
+# Trigger preloads
+_get_detector()
+_preload_llm()
 
 st.set_page_config(page_title="TrueSight AI · Deep Forensics", layout="wide", page_icon="🧿")
 
@@ -339,27 +409,36 @@ with tab1:
                     else:
                         st.metric("🦠 Malware Scan", "Clean")
 
-                # Biological Liveness (rPPG) Row
-                with vcol1:
-                    live_score = vid_res.get('liveness_score', 0)
-                    if live_score > 0:
-                        st.metric("🧬 Biological Liveness", "Anomaly", delta=f"{live_score}% Risk", delta_color="inverse")
-                    else:
-                        st.metric("🧬 Biological Liveness", "Detected", help="Remote photoplethysmography (rPPG) detected a human pulse in the skin.")
+                # Row 2: Biometrics & Advanced Detection
+                vcol5, vcol6, vcol7, vcol8 = st.columns(4)
+                
+                with vcol5:
+                    liveness_res = compute_liveness_result(vid_res)
+                    liveness_display = liveness_res.get("display", "Unknown")
+                    st.metric("🧬 Biometric Liveness", liveness_display, help="Remote photoplethysmography (rPPG) and micro-anomalies (blink/iris).")
+
+                with vcol6:
+                    sub = vid_res.get("sub_detectors", {})
+                    ela_persist = sub.get("ela_persistence", {})
+                    ela_score = ela_persist.get("score", 0)
+                    st.metric("📉 ELA Persistence", f"{ela_score:.0f}%", help="Consistency of ELA anomalies across multiple frames.")
+
+                with vcol7:
+                    blend = sub.get("face_blend", {})
+                    blend_score = blend.get("score", 0)
+                    st.metric("🧩 Face Blend", f"{blend_score:.0f}%", help="Laplacian edge energy anomalies at the face/neck boundary.")
+
+                with vcol8:
+                    color = sub.get("colour_mismatch", {})
+                    color_score = color.get("score", 0)
+                    st.metric("🌡️ Color Mismatch", f"{color_score:.0f}%", help="Delta-E color temperature inconsistency between face and skin.")
 
                 if vid_res.get('ai_frame_scores'):
                     avg_ai = sum(vid_res['ai_frame_scores']) / len(vid_res['ai_frame_scores'])
                     st.info(f"🤖 Average frame AI-generation score: **{avg_ai:.0f}%**")
 
-                ssim = vid_res.get('ssim', {})
-                eye_v = vid_res.get('eye_var', 'N/A')
-                if ssim:
-                    st.caption(f"Forensic Signals: SSIM-Std={ssim.get('ssim_std', 'N/A')}, "
-                               f"Eye-Var={eye_v} "
-                               f"{'⚠️ Anomaly detected' if ssim.get('anomaly') or (isinstance(eye_v, float) and 0 < eye_v < 0.8) else '✅ Normal'}")
-
                 if vid_res['reasons']:
-                    st.write("**Suspicious Indicators:**")
+                    st.write("**Suspicious Forensic Indicators:**")
                     for reason in display_indicators(vid_res['reasons']):
                         st.warning(f"⚠️ {reason}")
                 else:
@@ -376,7 +455,7 @@ with tab1:
                         'specific_details': {
                             'AI Synthesis Probability': f"{vid_res.get('ai_gen_score',0)}%",
                             'Manipulation/Morphing': f"{int(round(float(vid_res.get('morphing_score', vid_res.get('manip_score', 0) or 0))))}%",
-                            'Temporal Consistency (SSIM)': ssim.get('ssim_mean', 'N/A') if ssim else "Skipped",
+                            'Temporal Consistency (SSIM)': vid_res.get('sub_detectors', {}).get('ssim_morphing', {}).get('ssim_mean', 'N/A'),
                             'Threat Indicators': ", ".join(display_indicators(vid_res['reasons'])) if vid_res['reasons'] else "None"
                         },
                         'key_findings': display_indicators(vid_res['reasons']),
@@ -656,6 +735,9 @@ st.divider()
 st.subheader("Results & Reporting")
 st.caption("⚙️ Fusion Engine will compute the final verdict using weighted mathematical logic. 🧠 AI Analyst (Qwen2) will then generate the forensic explanation report.")
 
+
+
+
 if st.button("Generate Final Forensic Report (CPU-Optimized Fusion)", type="primary"):
     with st.spinner("Computing Weighted Fusion & Generating LLM Explanation..."):
         all_evidence = {}
@@ -671,8 +753,13 @@ if st.button("Generate Final Forensic Report (CPU-Optimized Fusion)", type="prim
         if not all_evidence:
             st.error("No data analyzed yet. Run at least one analysis first.")
         else:
-            # Simple caching: Check if evidence is the same as last result
-            evidence_hash = str(sorted(all_evidence.keys())) + str(sum([v.get('score', 0) for v in all_evidence.values()])) + str(skip_ai)
+            _v = all_evidence.get("Video") or {}
+            evidence_hash = (
+                str(sorted(all_evidence.keys()))
+                + str(sum([v.get("score", 0) for v in all_evidence.values()]))
+                + str(_v.get("morphing_score", ""))
+                + str(skip_ai)
+            )
             
             if "last_verdict" in st.session_state and st.session_state.get("last_evidence_hash") == evidence_hash:
                 verdict = st.session_state.last_verdict
@@ -680,31 +767,20 @@ if st.button("Generate Final Forensic Report (CPU-Optimized Fusion)", type="prim
                 st.success("⚡ Result retrieved from session cache (Instant).")
             else:
                 with st.status("🔍 Forensic Fusion Engine: Computing Tier 2 Verdict...", expanded=True) as status:
-                    st.write("Synthesizing multi-modal signals...")
-                    verdict = generate_final_verdict_ai(all_evidence, skip_llm=skip_ai, stream=not skip_ai)
+                    status.write("Synthesizing multi-modal signals...")
+                    # We call with stream=False now as requested
+                    verdict = generate_final_verdict_ai(all_evidence, skip_llm=skip_ai, stream=False)
                     
                     if not skip_ai:
-                        st.write("🧠 AI Analyst Expert Mode (Streaming)...")
-                        explanation_data = verdict.get('ai_explanation', 'No analysis available.')
-                        
-                        if isinstance(explanation_data, str):
-                            ai_explanation = explanation_data
-                            st.info(ai_explanation)
-                        else:
-                            def generator():
-                                try:
-                                    for chunk in explanation_data:
-                                        if isinstance(chunk, dict) and 'response' in chunk:
-                                            yield chunk['response']
-                                        else:
-                                            yield str(chunk)
-                                except Exception as e:
-                                    yield f"\n[Streaming Error: {str(e)}]"
-                            ai_explanation = st.write_stream(generator)
+                        status.write("🧠 AI Analyst Expert Mode: Initiating reasoning...")
+                        # Pass the whole verdict to display_reasoning
+                        ai_explanation = display_reasoning(verdict, st.container())
                     else:
-                        ai_explanation = verdict.get('ai_explanation', 'AI Bypassed.')
+                        ai_explanation = "AI Bypassed."
                         st.info(ai_explanation)
                     
+                    status.write("🧬 Applying cross-modal penalties & safety floors...")
+                    status.write("📝 Finalizing forensic record...")
                     status.update(label="✅ Analysis Complete", state="complete", expanded=False)
                 
                 # Update cache
@@ -713,15 +789,17 @@ if st.button("Generate Final Forensic Report (CPU-Optimized Fusion)", type="prim
                 st.session_state.last_evidence_hash = evidence_hash
 
             st.subheader("⚙️ Computed Risk Breakdown")
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("🦠 Threat Score", f"{verdict.get('threat_score', 0)}%", help="Security threat detection (Malware, etc).")
             with col2:
-                st.metric("🤖 AI-Generated Score", f"{verdict.get('ai_generated_score', 0)}%", help="Is this content fully born from an AI model like Midjourney?")
+                st.metric("🤖 AI-Generated Score", f"{verdict.get('ai_generated_score', 0)}%", help="Synthesis signals (e.g. ViT / frame percentiles).")
             with col3:
-                st.metric("🎭 Manipulation Score", f"{verdict.get('manipulation_score', 0)}%", help="Has a real file been doctored/edited (deepfake swap, Photoshop)?")
+                st.metric("🎭 Morphing", f"{verdict.get('morphing_score', 0)}%", help="Morphing index fused as its own modality (face SSIM/warp + meta + phase).")
             with col4:
-                st.metric("⚡ Final Score", f"{verdict.get('final_score', 0)}%")
+                st.metric("🎭 Manipulation", f"{verdict.get('manipulation_score', 0)}%", help="Post-fusion manipulation index (matches morphing when video-driven).")
+            with col5:
+                st.metric("⚡ Final Score", f"{verdict.get('final_score', 0)}%", help="Full fusion: modalities + morphing + liveness + safety rules.")
 
             risk_level = verdict.get('risk_level', 'Low')
             confidence = verdict.get('confidence', 'Low')
@@ -745,6 +823,7 @@ if st.button("Generate Final Forensic Report (CPU-Optimized Fusion)", type="prim
                 'threat_score': verdict.get('threat_score', 0),
                 'ai_generated_score': verdict.get('ai_generated_score', 0),
                 'manipulation_score': verdict.get('manipulation_score', 0),
+                'morphing_score': verdict.get('morphing_score', 0),
                 'confidence': confidence,
                 'key_findings': key_findings,
                 'url_score': st.session_state.url_result['score'] if st.session_state.url_result else 0,
