@@ -12,11 +12,11 @@ A multimodal cyber forensics tool that detects AI-generated, deepfaked, or manip
 Upload Media → Multi-Stage Analysis → Forensic Fusion → Qwen2 Analyst → PDF Report
 ```
 
-1.  **AI Image Detection**: ViT transformers + Elite Spectral FFT detects internal "grids" left by GANs/Diffusion.
-2.  **Biological Liveness**: Monitors rPPG pulse (skin chrominance) and blink variance to confirm human presence.
+1.  **AI Image Detection**: ViT transformers + **Radial Spectral Slope** + **Chromatic Aberration** detects internal "grids" and frequency anomalies.
+2.  **Biological Liveness**: Monitors **CHROM-rPPG** pulse and **Iris Jitter** (Gaze Naturalness) to confirm human presence.
 3.  **Spatio-Temporal Video**: SSIM and Optical Flow analyze frame-to-frame consistency for deepfake warping.
 4.  **Audio Forensics**: Pitch, MFCC, and spectral energy analysis catches synthetic TTS and voice clones.
-5.  **Forensic Fusion**: A cascading logic engine that applys "Low-Confidence Capping" (19% safety floor) to prevent false positives.
+5.  **Forensic Fusion**: A **Max-Biased** cascading engine that applies "Low-Confidence Capping" (19% safety floor).
 6.  **Qwen2 (0.5B)**: Local LLM writes the final forensic explanation with zero cloud dependency.
 
 ---
@@ -87,7 +87,8 @@ TrueSight/
 
 | File | Purpose |
 |---|---|
-| [`code.md`](code.md) | Explains every file's logic and data flow |
-| [`arc.md`](arc.md) | Architecture diagrams and weight justification |
-| [`project.md`](project.md) | Scoring thresholds and design decisions |
-| [`setup.md`](setup.md) | Step-by-step installation guide |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Technical blueprint and data flow |
+| [`ALGORITHM.md`](ALGORITHM.md) | "Strong Accurate" methodology and heuristics |
+| [`PROJECT_SPEC.md`](PROJECT_SPEC.md) | Scoring thresholds and weights |
+| [`SETUP.md`](SETUP.md) | Step-by-step installation guide |
+| [`prompt.md`](prompt.md) | Project DNA and onboarding prompt |

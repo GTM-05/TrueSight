@@ -9,25 +9,20 @@ TrueSight is designed to be **Privacy-First** and **Resource-Efficient**. It run
 
 ### 2.1 Analysis Layer (`modules/`)
 These modules extract raw forensic evidence without using the LLM.
-- **`video.py`**: The "High-Traffic" entry point. Orchestrates frame sampling, rPPG liveness, and SSIM consistency.
-- **`image.py`**: Handles static analysis using ViT transformers and ELA.
-- **`audio.py`**: Performs signal processing (Pitch std, MFCC, Energy) to catch voice clones.
+- **`video.py`**: Orchestrates **CHROM-rPPG** liveness, **Iris Jitter** (Gaze Naturalness), and SSIM consistency.
+- **`image.py`**: Performs **Radial Spectral Slope** analysis, **Chromatic Alignment**, and ELA re-compression checks.
+- **`audio.py`**: Performs signal processing (Pitch std, MFCC, Flux) to catch voice clones.
 - **`metadata.py`**: Cross-references internal file tags with known generative AI tool signatures.
-- **`url.py`**: Analyzes entropy, DGA probability, and homograph similarity for phishing detection.
-- **`threats.py`**: A malware scanner that provides an "Immediate-Fail" override for suspicious binaries.
 
 ### 2.2 Fusion Intelligence (`fusion/`)
-- **`engine.py`**: Implements the weighted decision logic. It takes raw scores from the Analysis Layer and combines them into three categorical metrics: **Threat**, **AI-Generated**, and **Manipulation**.
-
-### 2.3 The Analyst Layer (`llm/`)
-- **`llm.py`**: Interfaces with Ollama to run the `qwen2:0.5b` model. This layer acts as the "Narrator," turning mathematical scores into a human-readable forensic dossier.
+- **`engine.py`**: Implements the **Max-Biased Fusion** logic. It takes raw scores and biological overrides (rPPG/Iris) to calculate the final verdict, applying the **19% Safety Floor** for low-confidence data.
 
 ## 3. Data Flow (Lifecycle of an Analysis)
 
-1.  **Ingestion**: Streamlit UI accepts a file upload.
-2.  **Taping**: `video.py` or `image.py` performs initial heuristics (blur, format).
-3.  **Cascading Filter**: If suspicious, it triggers the "Strong Accurate Algorithm" (SSIM, FFT Grids, Liveness).
-4.  **Fusion**: Results are vectorized and passed to `fusion/engine.py`.
+1.  **Ingestion**: Streamlit UI accepts a multi-modal file upload.
+2.  **Artifact Extraction**: `image.py` or `video.py` performs spectral and structural scans.
+3.  **Biological Triage**: Face tracking isolates ROI -> CHROM-rPPG verifies heart rate -> Iris Jitter verifies gaze.
+4.  **Cascading Fusion**: Results are vectorized. A "Smoking Gun" (e.g., Grid Artifact) overrides broad averages.
 5.  **Narration**: LLM receives a context string (Scoring Table + Evidence list) and generates the "Dossier."
 6.  **Archival**: `reports/generator.py` serializes the result into a timestamped PDF.
 

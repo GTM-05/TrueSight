@@ -33,9 +33,10 @@ If the `Final Score < 75` and no **Strong Forensic Anchors** (FFT Grids, High Vi
 |---|---|---|
 | `AI_SYNTH_STRONG` | 45% | Definitive AI probability threshold. |
 | `GRID_PEAK_RATIO` | 120 | FFT Spectral Peak sensitivity. |
+| `SPECTRAL_SLOPE` | -2.2 | Expected power law for natural images. |
+| `CHROM_ALIGN_MIN` | 2.5 | Minimum channel misalignment for real sensors. |
 | `SAFETY_CAP_LIMIT` | 75% | Threshold for applying the noise floor. |
 | `SAFETY_CAP_VAL` | 19% | Final low-risk score for noise. |
-| `LACK_DATA_PENALTY`| 15% | Penalty for missing biometric data. |
 
 ---
 
