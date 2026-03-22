@@ -16,8 +16,8 @@ Upload → Per-modality analyzers → Fusion engine (math) → LLM narrative (op
 2. **Video** — Sampled frames analyzed as video-sourced images; **face ROI** adjacent-frame SSIM (dual-threshold morphing), optical-flow **face warp**, rPPG liveness, lip–audio sync, metadata; **`morphing_score`** combines spatial signals, metadata scale, and **audio phase spike** density (not the same as aggregate video risk).
 3. **Audio** — Pitch, MFCC, HNR, spectral flatness, **phase discontinuities** (splice spikes), silence/TTS heuristics.
 4. **URL** — Homograph, entropy, shorteners, TLS, phishing keywords (RFC1918 / localhost handling).
-5. **Fusion** (`fusion/engine.py`) — **Strong-anchor fusion**, **cross-modal spread penalty**, **liveness reduction**, then **graduated safety floor** (config-driven; not a single fixed 19% rule for every path).
-6. **LLM** (`llm/llm.py`) — Receives a **JSON forensic brief** derived from evidence + fusion output so small models are constrained to real numbers; default model is set in **`config.py`** (`LLM_VERDICT_MODEL`, often `qwen2.5:3b`; `qwen2:0.5b` still works for smoke tests).
+5. **Fusion** (`fusion/engine.py`) — **Consensus-boosted** (CDC) strong-anchor fusion; large scores anchored when 4+ sectors fire. **Liveness-gating** prevents metabolic spoofing by skipping reduction when structural forensics (ELA, AI Gen) are active.
+6. **LLM** (`llm/llm.py`) — Receives a **JSON forensic brief** to ensure narrative consistency with numeric scores.
 
 **UI:** Per-frame indicator floods are grouped by tag via **`display_indicators()`** in `app.py` (e.g. many `[ELA]` lines → one summary).
 

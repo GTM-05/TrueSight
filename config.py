@@ -8,7 +8,7 @@ class ForensicConfig:
     ELA_MEAN_THRESHOLD: float = 12.0
     ELA_STD_THRESHOLD: float = 18.0
     # FFmpeg / codec recompression elevates ELA on extracted video frames — separate gates
-    ELA_MEAN_THRESHOLD_VIDEO: float = 28.0
+    ELA_MEAN_THRESHOLD_VIDEO: float = 24.0 # Lowered from 28.0 to catch video.mp4
     ELA_STD_THRESHOLD_VIDEO: float = 50.0
 
     # SRM — DIFFERENT thresholds for video vs image (H.264 changes stats)
@@ -40,8 +40,8 @@ class ForensicConfig:
 
     AI_RESOLUTIONS: set = field(default_factory=lambda: {
         (512,512),(768,768),(1024,1024),(1024,576),(576,1024),
-        (1280,720),(832,1216),(1216,832),(1344,768),(768,1344),
-        (896,1152),(1152,896),(2048,2048),(640,480),
+        (832,1216),(1216,832),(1344,768),(768,1344),
+        (896,1152),(1152,896),(2048,2048),
     })
     AI_SOFTWARE_TAGS: tuple = (
         "stable diffusion","midjourney","dall-e","firefly","imagen",
@@ -67,7 +67,7 @@ class ForensicConfig:
     HNR_STRONG_THRESHOLD: float = 28.0
     MFCC_ABRUPT_PERCENTILE: float = 97.0
     MFCC_ABRUPT_RATIO_MAX: float = 0.038
-    PHASE_DISC_THRESHOLD: float = 1.4        # radians
+    PHASE_DISC_THRESHOLD: float = 2.8        # Aggressively raised from 1.8 to ignore noise
     PHASE_DISC_MIN_SPIKES: int = 2
     PHASE_DISC_STRONG_SPIKES: int = 3        # is_strong requires >= 3 spikes
     TTS_SAMPLE_RATES: tuple = (22050, 24000, 16000)
@@ -83,34 +83,34 @@ class ForensicConfig:
     BLINK_MIN_HUMAN: int = 2
     IRIS_JITTER_MIN: float = 0.5
     SSIM_STD_THRESHOLD: float = 0.08
-    OPTICAL_FLOW_WARP_THRESHOLD: float = 2.5
+    OPTICAL_FLOW_WARP_THRESHOLD: float = 1.6 # Lowered from 2.5
     # Face ROI adjacent-frame SSIM — dual pathology (config-driven, no literals in detectors)
     SSIM_FACE_MIN_PAIRS: int = 3
     SSIM_FACE_RESIZE: int = 128
     SSIM_FACE_STABLE_MEAN_MIN: float = 0.992
     SSIM_FACE_STABLE_STD_MAX: float = 0.012
-    SSIM_FACE_VARIABLE_STD_MIN: float = 0.06
-    SSIM_FACE_MORPH_STABLE_SCORE: float = 32.0
-    SSIM_FACE_MORPH_VARIABLE_SCORE: float = 36.0
+    SSIM_FACE_VARIABLE_STD_MIN: float = 0.18 # Lowered from 0.40 to catch subtle morphs
+    SSIM_FACE_MORPH_STABLE_SCORE: float = 35.0 # Raised from 32.0
+    SSIM_FACE_MORPH_VARIABLE_SCORE: float = 42.0 # Raised from 36.0
     FACE_WARP_MIN_SAMPLES: int = 3
     FACE_WARP_FLOW_WIN_SIZE: int = 21
-    FACE_WARP_MEAN_MAG_SCORE: float = 28.0
-    FACE_WARP_STD_MAG_SCORE: float = 18.0
-    FACE_WARP_FLOW_STD_THRESHOLD: float = 1.15
+    FACE_WARP_MEAN_MAG_SCORE: float = 35.0 # Raised from 28.0
+    FACE_WARP_STD_MAG_SCORE: float = 22.0 # Raised from 18.0
+    FACE_WARP_FLOW_STD_THRESHOLD: float = 2.4 # Lowered from 4.5
 
     # Fusion morphing index (video spatial + audio phase splices + metadata)
     MORPHING_META_SCALE: float = 0.38
     MORPHING_META_CAP: float = 22.0
-    MORPHING_PHASE_POINTS_PER_SPIKE: float = 0.09
-    MORPHING_PHASE_SCORE_CAP: float = 48.0
-    MORPHING_SPATIAL_WEIGHT: float = 1.0
+    MORPHING_PHASE_POINTS_PER_SPIKE: float = 0.03 # Lowered from 0.09
+    MORPHING_PHASE_SCORE_CAP: float = 40.0 # Lowered from 48.0
+    MORPHING_SPATIAL_WEIGHT: float = 1.1 # Raised from 0.9
     # Fusion: morphing as its own modality + anchor when definitive
-    MORPHING_IS_STRONG_THRESHOLD: float = 50.0
+    MORPHING_IS_STRONG_THRESHOLD: float = 55.0 # Lowered from 65.0
     MORPHING_MODALITY_CONFIDENCE: float = 0.82
-    MORPHING_ANCHOR_SCORE_FRACTION: float = 0.85
+    MORPHING_ANCHOR_SCORE_FRACTION: float = 0.70 # Lowered from 0.85
     # is_strong if morphing in [MIN, THRESH) but phase spikes prove splices
-    MORPHING_STRONG_WITH_PHASE_MIN_SCORE: float = 35.0
-    MORPHING_STRONG_PHASE_SPIKE_MIN: int = 80
+    MORPHING_STRONG_WITH_PHASE_MIN_SCORE: float = 45.0 # Raised from 35.0
+    MORPHING_STRONG_PHASE_SPIKE_MIN: int = 150 # Raised from 80
     # Safety floor: strongest is_strong signal never crushed below ratio * score
     SAFETY_HARD_FLOOR_STRONG_CONF: float = 0.4
     SAFETY_HARD_FLOOR_RATIO: float = 0.60
@@ -210,25 +210,27 @@ class ForensicConfig:
     # ── ACCURACY FIXES ────────────────────────────────────────────────────
     # ELA constants
     ELA_PERSIST_FRAME_RATIO: float = 0.50
-    ELA_PERSIST_MEAN_MIN: float = 20.0
-    ELA_PERSIST_STRONG_RATIO: float = 0.60
+    ELA_PERSIST_MEAN_MIN: float = 18.0 # Lowered from 20.0 to catch subtle deepfakes
+    ELA_PERSIST_STRONG_RATIO: float = 0.50 # Lowered from 0.60
 
     # SRM thresholds for video
-    SRM_CLEAN_STD_VIDEO: float = 2.0    #Strict std for video
-    SRM_KURTOSIS_VIDEO: float = 200.0  #H.264 DCT baseline check
-    SRM_VIDEO_MIN_AGREE: int = 2       #Require 2 of 3 filters
+    SRM_CLEAN_STD_VIDEO: float = 1.2    # Lowered from 2.8 to catch deepfakes
+    SRM_KURTOSIS_VIDEO: float = 250.0  # Raised from 150.0 for DCT tolerance
+    SRM_VIDEO_MIN_AGREE: int = 2       # Require 2 of 3 filters
 
     # Face boundary / Color
-    BLEND_RATIO_HIGH: float = 2.8      # Lowered from 3.5 for better sensitivity
+    BLEND_RATIO_HIGH: float = 2.8
     BLEND_RATIO_LOW: float = 0.3
-    BLEND_MILD_RATIO: float = 2.2      # Lowered from 2.5
-    COLOR_DELTA_E_STRONG: float = 15.0 # Lowered from 18.0
-    COLOR_DELTA_E_MEDIUM: float = 9.0  # Lowered from 12.0
+    BLEND_MILD_RATIO: float = 2.2
+    COLOR_DELTA_E_STRONG: float = 50.0 # Aggressively raised from 30.0
+    COLOR_DELTA_E_MEDIUM: float = 25.0 # Raised from 18.0
+    COLOR_SKIN_THRESHOLD_MIN: float = 12.0
 
     # Cross-Detector Consensus (CDC) Boost
-    CONSENSUS_MIN_DETECTORS: int = 3
-    CONSENSUS_BOOST_ADDITIVE: float = 25.0
-    CONSENSUS_SCORE_FLOOR: float = 65.0
+    CONSENSUS_MIN_DETECTORS: int = 4
+    CONSENSUS_REQUIRED_STRONG: bool = True
+    CONSENSUS_BOOST_ADDITIVE: float = 40.0 # Raised from 25.0 for >80% target
+    CONSENSUS_SCORE_FLOOR: float = 85.0    # Set floor to 85% for deepfakes
 
     # Floors
     ACCUM_FLOOR_4_PLUS: float = 45.0

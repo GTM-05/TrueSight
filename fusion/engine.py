@@ -64,8 +64,11 @@ def cross_modal_penalty(
     conf_map = {"video": video_c, "audio": audio_c, "image": image_c}
     score_map = {"video": video_s, "audio": audio_s, "image": image_s}
     for k in score_map:
-        if float(conf_map[k] or 0) > 0.4:
-            active[k] = float(score_map[k] or 0)
+        score = float(score_map[k] or 0)
+        conf = float(conf_map[k] or 0)
+        # Higher confidence required for low scores; lower confidence okay for clear forensics
+        if conf > 0.4 or (score > 60 and conf > 0.3):
+            active[k] = score
 
     if len(active) < 2:
         return 0.0, None
@@ -101,24 +104,41 @@ def apply_liveness_reduction(
     jitter = float(liveness.get("iris_jitter", 0.0) or 0.0)
     conf = float(liveness.get("confidence", 0.5) or 0.5)
 
-    # Count how many OTHER detectors fired (not liveness itself)
-    other_fired = sum(
-        1
-        for s in all_signals
-        if float(s.get("score", 0) or 0) > 20
-        and "liveness" not in str(s.get("reasons", "")).lower()
-    )
+    def _is_structural(s):
+        score = float(s.get("score", 0) or 0)
+        if score >= 60: return True # High confidence forensic finding
+        if score < 25: return False
+        reasons = s.get("reasons", [])
+        if isinstance(reasons, str): reasons = [reasons]
+        txt = " ".join(reasons).lower()
+        return any(t in txt for t in ["ela", "srm", "ai", "morph", "spectrum", "dct", "warp", "consensus"])
 
-    # FIX-2: If other signals are firing, heavily limit liveness reduction
-    if other_fired >= 2:
-        factor = float(CFG.LIVENESS_MAX_REDUCTION_WITH_OTHER_SIGNALS)
-        msg = (
-            f"Partial liveness reduction only — {other_fired} other forensic "
-            f"signals active. 30% reduction applied (face-swap pattern)."
-        )
-    elif other_fired == 1:
-        factor = 0.60  # 40% reduction
-        msg = f"Limited liveness reduction — 1 other signal active. 40% reduction applied."
+    def _is_any_forensic(s):
+        score = float(s.get("score", 0) or 0)
+        if score < 15: return False
+        reasons = s.get("reasons", [])
+        if isinstance(reasons, str): reasons = [reasons]
+        txt = " ".join(reasons).lower()
+        return "liveness" not in txt or score > 40
+
+    structural_fired = sum(1 for s in all_signals if _is_structural(s))
+    other_fired = sum(1 for s in all_signals if _is_any_forensic(s))
+
+    # DEBUG
+    with open("/tmp/fusion_debug.log", "a") as f:
+        f.write(f"DEBUG: structural_fired={structural_fired}, other_fired={other_fired}\n")
+
+    # FIX-2: If structural signals are firing, HEAVILY limit or skip liveness reduction
+    if structural_fired >= 1:
+        # Deepfakes often hallucinate/preserve pulse; don't let it mask forensics
+        factor = 1.0 
+        msg = f"Liveness reduction SKIPPED — {structural_fired} structural signals active (possible pulse spoofing)."
+    elif other_fired >= 3:
+        factor = 0.70
+        msg = f"Partial liveness reduction only — {other_fired} forensic signals active. 30% reduction applied."
+    elif other_fired >= 1:
+        factor = 0.40
+        msg = f"Significant liveness reduction — only {other_fired} heuristic signals active. 60% reduction applied."
     elif pulse and blinks >= 2 and jitter > float(CFG.IRIS_JITTER_MIN):
         factor = float(CFG.LIVENESS_CONFIRMED_FACTOR)
         msg = "Full liveness confirmed, no other signals — 90% reduction applied."
@@ -127,6 +147,9 @@ def apply_liveness_reduction(
         msg = f"Partial liveness (pulse={pulse}, blinks={blinks}) — 50% reduction."
     else:
         return raw_score, []
+
+    if factor >= 1.0:
+        return raw_score, [f"[LIVENESS] {msg}"]
 
     reduced = max(raw_score * factor * conf, float(CFG.LIVENESS_MIN_FLOOR))
     return reduced, [f"[LIVENESS] {msg}"]

@@ -26,7 +26,7 @@ from modules.video import analyze_video
 
 def _evidence_from_video(vid_res: dict) -> dict:
     """Single-modality video run: mirror minimal audio/image stubs for fusion."""
-    aud_s = float(vid_res.get("metrics", {}).get("audio_score", 0) or 0)
+    aud_s = float((vid_res.get("audio") or {}).get("score", 0) or 0)
     return {
         "Video": vid_res,
         "Audio": {

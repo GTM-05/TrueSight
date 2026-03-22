@@ -31,8 +31,9 @@ Privacy-first, local multimodal forensics: **detectors → fusion math → optio
 
 1. Fuse modality dicts (strong-anchor + bounded weak boost, or weighted blend).
 2. Cross-modal penalty if confident modalities disagree strongly.
-3. Liveness-based reduction when biological signals support authenticity.
-4. Graduated safety floor and reason append (`[FLOOR]`, etc.).
+3. **Cross-Detector Consensus (CDC)** — Boost and anchor score if 4+ independent forensic sectors fire simultaneously.
+4. **Liveness-gating** — Reduction is **skipped** if structural signals (ELA, AI Gen, etc.) are detected, preventing spoofing.
+5. Graduated safety floor and reason append.
 
 **`compute_morphing_score(video_result, audio_result)`** is a **separate index** (face morph + metadata + phase spikes) used for manipulation/morphing metrics and LLM briefs, not a replacement for the main fusion formula.
 

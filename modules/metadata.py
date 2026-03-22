@@ -95,7 +95,7 @@ def check_video_metadata(video_path):
         
         # 1. Check for suspicious encoders
         encoder = tags.get('encoder', '').lower()
-        if any(s in encoder for s in ['lavc', 'lavf', 'ffmpeg', 'handbrake', 'premiere', 'resolve']):
+        if any(s in encoder for s in ['lavc', 'lavf', 'ffmpeg', 'handbrake', 'premiere', 'resolve', 'google']):
             # Not necessarily AI, but common in re-encoded/manipulated video
             score += 15
             reasons.append(f"Video re-encoded with potentially suspicious software: {encoder}")

@@ -572,8 +572,20 @@ def detect_color_inconsistency(frame: np.ndarray, face_box: Optional[tuple]) -> 
     face_lab = cv2.cvtColor(face_roi, cv2.COLOR_BGR2Lab).astype(np.float32)
     neck_lab = cv2.cvtColor(neck_roi, cv2.COLOR_BGR2Lab).astype(np.float32)
 
-    face_mean = np.mean(face_lab.reshape(-1, 3), axis=0)
-    neck_mean = np.mean(neck_lab.reshape(-1, 3), axis=0)
+    # NEW: Skin-guard. Skip if neck ROI is too gray/dark (common for clothing or shadows)
+    face_hsv = cv2.cvtColor(face_roi, cv2.COLOR_BGR2HSV)
+    neck_hsv = cv2.cvtColor(neck_roi, cv2.COLOR_BGR2HSV)
+    face_sat = np.mean(face_hsv[:,:,1])
+    neck_sat = np.mean(neck_hsv[:,:,1])
+    
+    if face_sat < CFG.COLOR_SKIN_THRESHOLD_MIN or neck_sat < CFG.COLOR_SKIN_THRESHOLD_MIN:
+        return {"score": 0.0, "confidence": 0.2, "is_strong": False, "reasons": []}
+
+    # REFINED: Chromaticity-only Delta-E (ignore 'L' channel for shadow tolerance)
+    face_chroma = face_lab.reshape(-1, 3)[:, 1:] # a, b only
+    neck_chroma = neck_lab.reshape(-1, 3)[:, 1:] # a, b only
+    face_mean = np.mean(face_chroma, axis=0)
+    neck_mean = np.mean(neck_chroma, axis=0)
     delta_e = float(np.sqrt(np.sum((face_mean - neck_mean) ** 2)))
 
     risk = 0.0
@@ -837,6 +849,7 @@ def analyze_video(
         "Color": color_agg.get("score", 0),
         "SRM": srm_s,
         "Metadata": meta_res.get("score", 0),
+        "Audio": audio_data.get("score", 0),
         "Noise": noise_s,
         "Liveness-Skip": live_skip_s,
     }
@@ -845,7 +858,7 @@ def analyze_video(
     # Binary/Metadata signals trigger at 9.0+, continuous signals at 15.0+
     firing = []
     for name, val in detector_scores.items():
-        if name in ["Metadata", "Noise", "Liveness-Skip"]:
+        if name in ["Metadata", "Noise", "Liveness-Skip", "Audio"]:
             if val >= 9.0: firing.append(name)
         else:
             if val >= 15.0: firing.append(name)
@@ -853,14 +866,32 @@ def analyze_video(
     base_final = max(detector_scores.values())
     final_score = base_final
     
-    # CONSENSUS BOOST: 3+ independent sectors = High Risk
-    if len(firing) >= int(CFG.CONSENSUS_MIN_DETECTORS):
-        # Accumulative agreement boost
+    # CONSENSUS BOOST: 4+ independent sectors = High Risk
+    # IF 3 sectors fire, we only boost if at least one is "strong" (anchored)
+    is_any_strong = bool(
+        agg.get("is_strong") or ela_persist.get("is_strong") or 
+        blend_agg.get("is_strong") or color_agg.get("is_strong") or 
+        rppg.get("is_strong") or 
+        morphing_score >= CFG.MORPHING_IS_STRONG_THRESHOLD
+    )
+    
+    # NEW: Only allow large boost if at least one 'structural' detector fired
+    structural_list = ["AI", "ELA", "SRM", "Morphing", "Blend"]
+    is_structural = any(s in firing for s in structural_list)
+
+    use_boost = False
+    if len(firing) >= int(CFG.CONSENSUS_MIN_DETECTORS) and is_structural:
+        use_boost = True
+    elif len(firing) >= 3 and CFG.CONSENSUS_REQUIRED_STRONG and is_any_strong and is_structural:
+        use_boost = True
+
+    if use_boost:
+        # Accumulative agreement boost (TARGET: >80% for deepfakes)
         boosted = base_final + float(CFG.CONSENSUS_BOOST_ADDITIVE)
         final_score = max(boosted, float(CFG.CONSENSUS_SCORE_FLOOR))
         final_reasons_list.append(
             f"[CONSENSUS] {len(firing)} independent forensic sectors firing ({', '.join(firing)}). "
-            f"Multi-detector cross-verification confirms high-risk manipulation."
+            f"Cross-verification confirms high-risk manipulation."
         )
 
     final_score = float(min(100.0, final_score))

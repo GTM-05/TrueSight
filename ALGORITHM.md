@@ -38,9 +38,10 @@ Cascading **multi-modal** pipeline: fast metadata and heuristics, then deeper im
 Not a single `max*0.9 + avg*0.1` formula. The engine:
 
 - **Rewards strong modalities** and adds **limited** contribution from weak ones.
+- **Cross-Detector Consensus (CDC)** — If 4+ independent sectors (e.g. AI, Metadata, Noise, ELA) fire, the score is boosted and anchored at High Risk (>=85%) to prevent subtle deepfakes from being missed.
 - **Penalizes** inconsistent high-confidence modalities (**cross-modal** spread).
-- **Reduces** score when **liveness** supports a real recording.
-- Applies a **graduated safety floor** so weak evidence does not creep to high risk without anchors; parameters in `config.py` (`SAFETY_*`, `SAFETY_CAP_SCORE_LIMIT`).
+- **Reduces** score when **liveness** supports a real recording, but this is **gated** by structural signals (ELAs, SRM, AI Gen) to avoid spoofing.
+- Applies a **graduated safety floor** so weak evidence does not creep to high risk without anchors.
 
 Verdict labels use **`HIGH_RISK_THRESHOLD`** (60) and **`MEDIUM_RISK_THRESHOLD`** (30).
 

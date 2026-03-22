@@ -10,10 +10,9 @@ TrueSight is a **local, offline-first** multimodal forensic assistant. **Numeric
 
 Version 3.0 uses a **fixed four-step pipeline** (not the legacy weighted max/avg formula):
 
-1. **`fuse_module_results`** — If any modality is **strong** (`is_strong` and confidence > 0.5), the fused score is anchored on the strongest detector plus a **capped weak-signal boost** (`FUSION_BOOST_MULTIPLIER`, `FUSION_BOOST_MAX`). Otherwise a **confidence-weighted** blend of active detectors.
-2. **`cross_modal_penalty`** — When at least two modalities have confidence > 0.4, large **spread** between their scores adds a penalty (deepfake substitution pattern). Constants: `CROSS_MODAL_SPREAD_*`, `CROSS_MODAL_PENALTY_MAX`.
-3. **`apply_liveness_reduction`** — If video liveness suggests a real subject, the raw fused score is **multiplied down** (full vs partial confirmation). See `LIVENESS_*` in `config.py`.
-4. **`apply_safety_floor`** — **Graduated** floors: strong/medium anchors raise minimum risk; weak evidence can be **capped** toward `SAFETY_FLOOR_RESULT` when below `SAFETY_CAP_SCORE_LIMIT`. Replaces a single global “always 19%” story.
+3. **Cross-Detector Consensus (CDC)** — If 4+ independent sectors (AI, Metadata, Audio, Noise, etc.) fire, the score is boosted and anchored at High Risk (>=85%) or the `CONSENSUS_SCORE_FLOOR`.
+4. **Liveness-gating** — If any **structural** signals (ELA, SRM, AI, Morph) fire, liveness-based reduction is **skipped** to prevent metabolic spoofing.
+5. **apply_safety_floor** — Graduated floors for consistent evidence tracking.
 
 Outputs include **`verdict`** (`HIGH` / `MEDIUM` / `LOW RISK` strings), **`sub_scores`** per modality, merged **`reasons`**, and flags such as **`liveness_detected`**.
 

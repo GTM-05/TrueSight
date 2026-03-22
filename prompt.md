@@ -29,10 +29,11 @@ Use this when extending or debugging **TrueSight**: a **local, multimodal, heuri
 
 ## Fusion v3.0 (mental model)
 
-1. **Fuse** modalities (strong detector dominates + capped weak boost, or weighted blend).  
-2. **Cross-modal penalty** if confident scores diverge too much.  
-3. **Liveness reduction** when video biology supports authenticity.  
-4. **Graduated safety floor** — not one hard-coded “19% only” story; see `SAFETY_*` in `config.py`.
+1. **Fuse** (strong-anchor + capped weak boost, or weighted blend).
+2. **Cross-modal penalty** for diverging high-confidence scores.
+3. **Cross-Detector Consensus (CDC)** — 4+ firing sectors = High Risk anchor.
+4. **Liveness-gating** — Skip reduction if structural signals (ELA, AI Gen) are present.
+5. **Safety floor** (graduated).
 
 **Morphing** is a **parallel index** (face temporal + metadata + phase spikes), not a duplicate of raw video aggregate risk.
 
