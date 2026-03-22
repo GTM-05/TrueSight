@@ -268,19 +268,28 @@ with tab1:
                     st.metric("🎭 Morphing", f"{vid_res.get('manip_score',0)}%", help="SSIM temporal inconsistency and metadata morphing indicators.")
                 with vcol4:
                     if threat_res['score'] > 0:
-                        st.metric("🦠 Malware", f"{threat_res['score']}%")
+                        st.metric("🦠 Malware Scan", f"{threat_res['score']}%")
                     else:
-                        st.metric("🛡️ File Safety", "Secure")
+                        st.metric("🦠 Malware Scan", "Clean")
+
+                # Biological Liveness (rPPG) Row
+                with vcol1:
+                    live_score = vid_res.get('liveness_score', 0)
+                    if live_score > 0:
+                        st.metric("🧬 Biological Liveness", "Anomaly", delta=f"{live_score}% Risk", delta_color="inverse")
+                    else:
+                        st.metric("🧬 Biological Liveness", "Detected", help="Remote photoplethysmography (rPPG) detected a human pulse in the skin.")
 
                 if vid_res.get('ai_frame_scores'):
                     avg_ai = sum(vid_res['ai_frame_scores']) / len(vid_res['ai_frame_scores'])
                     st.info(f"🤖 Average frame AI-generation score: **{avg_ai:.0f}%**")
 
                 ssim = vid_res.get('ssim', {})
+                eye_v = vid_res.get('eye_var', 'N/A')
                 if ssim:
-                    st.caption(f"SSIM Temporal: mean={ssim.get('ssim_mean', 'N/A')}, "
-                               f"std={ssim.get('ssim_std', 'N/A')} "
-                               f"{'⚠️ Anomaly detected' if ssim.get('anomaly') else '✅ Normal'}")
+                    st.caption(f"Forensic Signals: SSIM-Std={ssim.get('ssim_std', 'N/A')}, "
+                               f"Eye-Var={eye_v} "
+                               f"{'⚠️ Anomaly detected' if ssim.get('anomaly') or (isinstance(eye_v, float) and 0 < eye_v < 0.8) else '✅ Normal'}")
 
                 if vid_res['reasons']:
                     st.write("**Suspicious Indicators:**")

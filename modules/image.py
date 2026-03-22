@@ -82,7 +82,12 @@ def detect_ai_generated(image_path: str, low_resource: bool = False, face_focus:
             if img_cv is not None and face_focus and face_cascade is not None:
                 gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
                 full_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                # Increased sensitivity
+                faces = face_cascade.detectMultiScale(gray, 1.05, 3)
+                if len(faces) == 0:
+                    profile = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+                    faces = profile.detectMultiScale(gray, 1.05, 3)
+                
                 if len(faces) > 0:
                     x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
                     pad_w, pad_h = int(w * 0.15), int(h * 0.15)
@@ -95,6 +100,19 @@ def detect_ai_generated(image_path: str, low_resource: bool = False, face_focus:
                     img_target = Image.fromarray(cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB))
                     print(f"[IMAGE] 🧿 Face-Centric Scan: Focusing on {w}x{h} region.")
 
+            # ── Micro-Texture Analysis (MesoNet-inspired) ─────────────
+            # High-frequency analysis of skin texture / noise patterns
+            gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+            # Denoise vs Original diff indicates "processed" smoothness
+            denoised = cv2.fastNlMeansDenoising(gray_crop, h=10)
+            noise_map = cv2.absdiff(gray_crop, denoised)
+            noise_std = float(np.std(noise_map))
+            # AI/GAN faces often have unnaturally uniform noise levels
+            if noise_std < 0.85: # Slightly more sensitive
+                texture_bonus = 35 # Increased from 25
+                face_metrics['texture_anomaly'] = 1.0
+                print(f"[IMAGE] 🧬 Micro-Texture Anomaly (std={noise_std:.2f})")
+
             if img_target is None:
                 img_target = Image.open(image_path).convert("RGB")
             
@@ -106,7 +124,7 @@ def detect_ai_generated(image_path: str, low_resource: bool = False, face_focus:
             for r in results:
                 lbl = r["label"].lower()
                 if any(k in lbl for k in ["artificial", "fake", "ai", "generated", "synthetic"]):
-                    ai_score = int(r["score"] * 100)
+                    ai_score = int(r["score"] * 100) + texture_bonus
                     label = r["label"]
                     break
             
@@ -128,24 +146,15 @@ def detect_ai_generated(image_path: str, low_resource: bool = False, face_focus:
     return _heuristic_ai_detection(image_path)
 
 
-def _heuristic_ai_detection(image_path: str) -> dict:
+def _spectral_analysis(image_path: str) -> dict:
     """
-    Fallback: detects likely AI-generated images via resolution + frequency analysis.
-    AI generators (Stable Diffusion, Midjourney) produce images at exact power-of-2
-    resolutions and have characteristic high-frequency smoothness patterns.
+    Analyzes the 2D Power Spectrum of an image to detect GAN/AI grid artifacts.
+    Returns a score 0-60 and reasons.
     """
     score = 0
     reasons = []
     try:
         img = Image.open(image_path)
-        w, h = img.size
-
-        # Known AI output resolutions
-        ai_resolutions = {(512,512),(768,768),(1024,1024),(1280,720),(1920,1080),(2048,2048)}
-        if (w, h) in ai_resolutions:
-            score += 30
-            reasons.append(f"Resolution {w}×{h} matches known AI generator output size")
-
         # FFT analysis: Detect periodic grid artifacts (common in GAN/AI synthesis)
         gray = np.array(img.convert("L")).astype(np.float32)
         fft = np.fft.fft2(gray)
@@ -157,29 +166,67 @@ def _heuristic_ai_detection(image_path: str) -> dict:
         smoothness = np.std(log_mag)
         
         # Detect periodic spikes (spectral peaks away from center)
-        # We look for outliers in the magnitude spectrum excluding the DC component
         h, w = magnitude.shape
         cy, cx = h//2, w//2
         mask = np.ones((h, w), bool)
         mask[cy-5:cy+6, cx-5:cx+6] = False # ignore center DC
-        peaks = np.percentile(magnitude[mask], 99.9)
-        mean_energy = np.mean(magnitude[mask])
         
-        if smoothness < 3.2:
-            score += 25
-            reasons.append(f"Spectral smoothness detected (std={smoothness:.2f}) — typical of generative models")
+        # Avoid division by zero
+        if np.any(mask):
+            peaks = np.percentile(magnitude[mask], 99.9)
+            mean_energy = np.mean(magnitude[mask])
+        else:
+            peaks, mean_energy = 0, 1
         
-        if peaks > mean_energy * 50:
-            score += 35
-            reasons.append("Periodic spectral peaks detected — structural artifacts characteristic of GAN/AI grid sampling")
+        if smoothness < 2.35:  # Tuned from 2.2 to be more sensitive
+            score += 20
+            reasons.append(f"Spectral smoothness detected (std={smoothness:.2f})")
+        
+        # Grid detection: Spikes in the spectrum
+        structural_artifact = False
+        peak_ratio = float(peaks / (mean_energy + 1e-9))
+        if peak_ratio > 120:  # Tightened from 140/180
+            score += 40 
+            reasons.append(f"Periodic spectral peaks detected (Ratio: {peak_ratio:.1f}) — structural AI artifacts (Grid)")
+            structural_artifact = True
+            
+    except Exception:
+        pass
+    
+    return {
+        'score': score, 
+        'reasons': reasons, 
+        'smoothness': float(smoothness) if 'smoothness' in locals() else 0.0,
+        'structural_artifact': structural_artifact,
+        'peak_ratio': peak_ratio if 'peak_ratio' in locals() else 0.0
+    }
 
+
+def _heuristic_ai_detection(image_path: str) -> dict:
+    """
+    Fallback: detects likely AI-generated images via resolution + frequency analysis.
+    """
+    score = 0
+    reasons = []
+    try:
+        img = Image.open(image_path)
+        w, h = img.size
+        # Suspicious square resolutions typical of generative models
+        ai_resolutions = {(512,512),(768,768),(1024,1024),(2048,2048)}
+        if (w, h) in ai_resolutions:
+            score += 20
+            reasons.append(f"Fixed square resolution {w}×{h} detected — suspicious AI footprint")
+        
+        spec_res = _spectral_analysis(image_path)
+        score += spec_res['score']
+        reasons.extend(spec_res['reasons'])
     except Exception:
         pass
 
     return {
         "ai_probability": min(100, score),
         "label": "Likely AI-Generated" if score >= 30 else "Likely Real",
-        "method": "Heuristic (resolution + FFT smoothness)",
+        "method": "Heuristic (resolution + spectral)",
         "model_used": False
     }
 
@@ -230,16 +277,17 @@ def analyze_image(image_path: str, low_resource: bool = False) -> dict:
     score = 0
     reasons = []
 
-    # 1. AI-generation check
+    # 1. AI-generation check (ViT / Layout)
     ai_res = detect_ai_generated(image_path)
     ai_prob = int(ai_res.get("ai_probability") or 0)
-
-    # Face-Centric and Noise Consistency Signals
     score += ai_prob
     if ai_prob >= 50:
         reasons.append(f"CRITICAL: High AI-generation signal ({ai_prob}%) [{ai_res.get('method', 'N/A')}]")
     elif ai_prob >= 20:
         reasons.append(f"AI-signature detected (Prob: {ai_prob}%)")
+
+    # 1.1 Spectral Analysis (Frequency Domain)
+    # Result is already incorporated in ai_prob via _heuristic_ai_detection fallback.
 
     # 1.1 Noise Consistency Check (Deepfake Artifacts)
     # If the face focus detected a face, compare it to the background noise
@@ -287,6 +335,8 @@ def analyze_image(image_path: str, low_resource: bool = False) -> dict:
             'ai_probability': ai_prob,
             'ela_std_dev': ela_std,
             'laplacian_variance': blur_variance,
-            'model_used': bool(ai_res.get('model_used'))
+            'model_used': bool(ai_res.get('model_used')),
+            'structural_artifact': ai_res.get('structural_artifact', False) or (spec_res.get('structural_artifact', False) if 'spec_res' in locals() else False),
+            'peak_ratio': spec_res.get('peak_ratio', 0.0) if 'spec_res' in locals() else 0.0
         }
     }

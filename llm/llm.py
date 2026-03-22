@@ -11,18 +11,23 @@ def llm_generate_explanation(evidence: dict, final_score: int, verdict: str, con
     
     # Authoritative Forensic Prompt (Optimized for small/quantized models)
     prompt = f"""[FORENSIC_EXPERT_REPORT]
-You are a Lead Forensic Analyst. Provide a detailed, professional narrative based on these results.
-DATA: {json.dumps({
-    'img': {'score': evidence.get('Image',{}).get('score',0), 'ela': img_m.get('ela_std_dev',0)},
-    'aud': {'score': evidence.get('Audio',{}).get('score',0), 'pitch_std': aud_m.get('pitch_std',0)},
-    'vid': {'score': vid_d.get('score',0)},
-    'fusion': {'total': final_score, 'level': verdict, 'confidence': f"{confidence}%"}
-})}
-INSTRUCTIONS:
-1. Start with a clear EXECUTIVE SUMMARY (2-3 sentences).
-2. Detail the TECHNICAL EVIDENCE (specifically mentioning ELA, Spectral grid, or pitch artifacts).
-3. Conclude with a FINAL VERDICT based on mathematical fusion.
-Be clinical, certain, and use forensic terminology."""
+You are a Lead Forensic Analyst. Provide a detailed technical justification for the following results.
+
+DATA:
+- Image Score: {evidence.get('Image',{}).get('score',0)}% (ELA Dev: {img_m.get('ela_std_dev',0)})
+- Audio Score: {evidence.get('Audio',{}).get('score',0)}% (Pitch Std: {aud_m.get('pitch_std',0)})
+- Video Score: {vid_d.get('score',0)}% (Frames: {vid_d.get('frames_analyzed',0)})
+- FINAL RISK: {final_score}% ({verdict})
+- CONFIDENCE: {confidence}%
+
+ANALYSIS INSTRUCTIONS:
+1. EXECUTIVE SUMMARY: Start with a 2-sentence summary of the primary threat vector.
+2. TECHNICAL EVIDENCE: Detail specific findings (SSIM anomalies, ELA artifacts, facial synthesis, or frequency inconsistencies).
+3. FUSION LOGIC: Explain how the multiple sensors combined to reach the {verdict} risk level.
+4. FINAL VERDICT: Conclude with a clinical statement on whether the media is likely AI-generated or manipulated.
+
+Be concise, professional, and use forensic terminology. If a score is low, explain that it represents a lack of detectable artifacts in that modality.
+"""
 
     try:
         if stream:

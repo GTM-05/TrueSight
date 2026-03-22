@@ -9,15 +9,15 @@ A multimodal cyber forensics tool that detects AI-generated, deepfaked, or manip
 ## How It Works
 
 ```
-Upload Media → Analyze (ViT + Signal Processing) → Fuse Scores → Qwen2 Explains → PDF Report
+Upload Media → Multi-Stage Analysis → Forensic Fusion → Qwen2 Analyst → PDF Report
 ```
 
-1. **Image**: ViT transformer + Error Level Analysis detects AI generation and editing
-2. **Audio**: Pitch, MFCC, and spectral analysis catches synthetic/TTS voices
-3. **Video**: Frame-level AI detection + SSIM consistency + audio + metadata
-4. **URL**: Entropy, homograph, and DGA analysis for phishing detection
-5. **Fusion Engine**: Mathematical weighted formula makes the final verdict
-6. **Qwen2 (0.5B)**: Local LLM writes the forensic explanation (no cloud, no API)
+1.  **AI Image Detection**: ViT transformers + Elite Spectral FFT detects internal "grids" left by GANs/Diffusion.
+2.  **Biological Liveness**: Monitors rPPG pulse (skin chrominance) and blink variance to confirm human presence.
+3.  **Spatio-Temporal Video**: SSIM and Optical Flow analyze frame-to-frame consistency for deepfake warping.
+4.  **Audio Forensics**: Pitch, MFCC, and spectral energy analysis catches synthetic TTS and voice clones.
+5.  **Forensic Fusion**: A cascading logic engine that applys "Low-Confidence Capping" (19% safety floor) to prevent false positives.
+6.  **Qwen2 (0.5B)**: Local LLM writes the final forensic explanation with zero cloud dependency.
 
 ---
 

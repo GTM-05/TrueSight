@@ -16,8 +16,23 @@ import tempfile
 import logging
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
+from PIL import Image
 
 log = logging.getLogger("truesight.video")
+
+class ForensicConfig:
+    """Centralized thresholds for the Strong Accurate Algorithm."""
+    AI_SYNTH_STRONG_THRESHOLD = 45
+    AI_SYNTH_EVIDENCE_THRESHOLD = 40
+    SAFETY_CAP_SCORE_LIMIT = 75
+    SAFETY_CAP_RESULT = 19
+    LIVENESS_CONFIRMED_FACTOR = 0.1
+    LIVENESS_PARTIAL_FACTOR = 0.7
+    MIN_LIVENESS_SIGNALS = 15
+    MIN_LIVENESS_FACES = 3
+    BLINK_MIN_HUMAN = 2
+    LACK_OF_DATA_PENALTY = 15
+    LAPLACIAN_BLUR_THRESHOLD = 80
 
 # MoviePy is replaced by OpenCV for better performance on 8GB RAM
 MOVIEPY_OK = False 
@@ -28,6 +43,7 @@ try:
 except ImportError:
     CV2_OK = False
 
+from modules.metadata import check_video_metadata
 from modules.image import analyze_image
 from modules.audio import analyze_audio
 
@@ -68,7 +84,11 @@ def _compute_ssim_sequence(frame_paths: list) -> dict:
     std = float(np.std(ssim_values))
     # Higher sensitivity: Catch subtle deepfake flickering
     anomaly = std > 0.08 or (mean > 0.98 and std > 0.03)
-    return {'ssim_mean': float(round(mean, 4)), 'ssim_std': float(round(std, 4)), 'anomaly': anomaly}
+    return {
+        'ssim_mean': float(round(float(mean), 4)), 
+        'ssim_std': float(round(float(std), 4)), 
+        'anomaly': anomaly
+    }
 
 
 def _compute_optical_flow_anomaly(frame_paths: list) -> dict:
@@ -125,58 +145,119 @@ def _compute_optical_flow_anomaly(frame_paths: list) -> dict:
     threshold = 0.4 if face_region is not None else 0.5
     anomaly = std > threshold
     return {
-        'flow_std': round(std, 4), 
+        'flow_std': float(round(float(std), 4)), 
         'anomaly': anomaly, 
         'method': 'Face-Flow' if face_region is not None else 'Global-Flow'
     }
 
 
+def _get_face_crop(image_path: str) -> dict:
+    """
+    Detects face and returns a dict with paths to Face, Eye, and Mouth ROIs.
+    """
+    res = {'face': image_path, 'eyes': None, 'mouth': None, 'is_face': False}
+    if not CV2_OK: return res
+    
+    try:
+        from modules.image import _get_face_detector
+        face_cascade = _get_face_detector()
+        img = cv2.imread(image_path)
+        if img is None or face_cascade is None: return res
+        
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # More sensitive detection for video frames (scale 1.05, minNeighbors 3)
+        faces = face_cascade.detectMultiScale(gray, 1.05, 3)
+        
+        # Fallback to Profile Face if frontal fails
+        if len(faces) == 0:
+            profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+            faces = profile_cascade.detectMultiScale(gray, 1.05, 3)
+        
+        if len(faces) > 0:
+            x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+            # ROIs: Eyes (Top ~1/3), Mouth (Bottom ~1/3)
+            eye_roi = img[y+int(h*0.15):y+int(h*0.45), x+int(w*0.1):x+int(w*0.9)]
+            mouth_roi = img[y+int(h*0.65):y+int(h*0.95), x+int(w*0.2):x+int(w*0.8)]
+            
+            face_path = image_path.replace(".jpg", "_f.jpg")
+            eye_path = image_path.replace(".jpg", "_e.jpg")
+            mouth_path = image_path.replace(".jpg", "_m.jpg")
+            
+            cv2.imwrite(face_path, img[max(0,y-int(h*0.1)):min(img.shape[0],y+int(h*1.1)), 
+                                      max(0,x-int(w*0.1)):min(img.shape[1],x+int(w*1.1))])
+            cv2.imwrite(eye_path, eye_roi)
+            cv2.imwrite(mouth_path, mouth_roi)
+            
+            return {'face': face_path, 'eyes': eye_path, 'mouth': mouth_path, 'is_face': True}
+    except Exception: pass
+    return res
+
+
+def _analyze_eye_variance(eye_paths: list) -> dict:
+    """Detects if eyes are unnaturally static or lack blinks."""
+    if not eye_paths or len(eye_paths) < 2: 
+        return {'var': 100.0, 'blinks': 0}
+    vals = []
+    for ep in eye_paths:
+        if ep and os.path.exists(ep):
+            img = cv2.imread(ep, cv2.IMREAD_GRAYSCALE)
+            if img is not None: vals.append(float(np.mean(img)))
+    
+    if not vals: return {'var': 100.0, 'blinks': 0}
+    
+    var = float(np.std(vals))
+    # Detect blinks: Sharp drops in mean intensity (eyes closing)
+    blinks = 0
+    if len(vals) > 5:
+        # Vectorized derivative check for sharp intensity dips (blinks)
+        arr = np.array(vals)
+        for i in range(1, len(arr)-1):
+            # Sharp dip: current is lower than neighbors by > 7%
+            if arr[i] < arr[i-1] * 0.93 and arr[i] < arr[i+1] * 0.93:
+                blinks = blinks + 1
+    
+    return {'var': var, 'blinks': int(blinks)}
+
+def _analyze_mouth_aspect_ratio(mouth_path: str) -> float:
+    """Measures mouth aspect ratio (h/w) and edge sharpness."""
+    if not mouth_path or not os.path.exists(mouth_path): return 0.0
+    img = cv2.imread(mouth_path, cv2.IMREAD_GRAYSCALE)
+    if img is None: return 0.0
+    
+    # Simple MAR estimation: vertical vs horizontal energy
+    h, w = img.shape
+    mar = h / w if w > 0 else 0.0
+    return float(mar)
+
+def _analyze_mouth_sharpness(mouth_path: str) -> float:
+    """Measures mouth edge sharpness (AI teeth are often blurry)."""
+    if not mouth_path or not os.path.exists(mouth_path): return 100.0
+    img = cv2.imread(mouth_path, cv2.IMREAD_GRAYSCALE)
+    if img is None: return 100.0
+    return float(cv2.Laplacian(img, cv2.CV_64F).var())
+
+
 def _fast_heuristic_score(image_path: str) -> int:
-    """
-    Ultra-fast frame pre-scan (~0.2s) using FFT smoothness + resolution check only.
-    Used in Step 1 of adaptive slicing to rank frames without running the heavy ViT model.
-    Returns a score 0–55 (max 55 to distinguish from full ViT which can reach 80+).
-    """
+    """Ultra-fast frame pre-scan using np/FFT."""
     score = 0
     try:
-        from PIL import Image
         img = Image.open(image_path)
         w, h = img.size
         # Known AI output resolutions
-        ai_resolutions = {(512, 512), (768, 768), (1024, 1024), (1280, 720), (1920, 1080)}
-        if (w, h) in ai_resolutions:
-            score += 25
-        # FFT smoothness — AI frames have unnaturally smooth frequency spectra
+        if (w, h) in {(512, 512), (768, 768), (1024, 1024)}: score += 25
+        # FFT smoothness
         gray = np.array(img.convert("L")).astype(np.float32)
-        fft_mag = np.log(np.abs(np.fft.fftshift(np.fft.fft2(gray))) + 1)
-        if np.std(fft_mag) < 3.5:
-            score += 30
-    except Exception:
-        pass
+        fft_mag = np.log(np.abs(np.fft.fftshift(np.fft.fft2(gray))) + 1e-9)
+        if np.std(fft_mag) < 2.5: score += 30
+    except Exception: pass
     return min(55, score)
-
 
 def analyze_video(file_path: str, low_resource: bool = False, deep_scan: bool = False) -> dict:
     """
-    Full AI-enhanced video analysis:
-      - Key frame AI-image detection (catches Sora/RunwayML/Pika generated video)
-      - Enhanced audio analysis (pitch, MFCC delta, energy)
-      - SSIM temporal consistency
-      - Silent track detection (raw AI video indicator)
+    AI-enhanced video analysis with ROI-based forensics and adaptive sampling.
     """
-    results: dict = {
-        'score': 0,
-        'risk_level': 'Low',
-        'reasons': list(),
-        'frames_analyzed': 0,
-        'audio_analyzed': False,
-        'ai_frame_scores': list(),
-        'ssim': dict(),
-    }
-
     if not CV2_OK:
-        results['reasons'].append("OpenCV (cv2) not installed — video analysis skipped")
-        return results
+        return {'score': 0, 'risk_level': 'Low', 'reasons': ["OpenCV not available"], 'metrics': {}}
 
     try:
         import time
@@ -184,218 +265,236 @@ def analyze_video(file_path: str, low_resource: bool = False, deep_scan: bool = 
 
         cap = cv2.VideoCapture(file_path)
         if not cap.isOpened():
-            results['reasons'].append("Could not open video file with OpenCV")
-            return results
+            return {'score': 0, 'risk_level': 'Low', 'reasons': ["File open error"], 'metrics': {}}
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = frame_count / fps
-        duration = min(duration, 10.0)
-        print(f"[VIDEO] ✅ Opened: {duration:.1f}s video | {fps:.0f}fps | {frame_count} frames")
-
-        frames_dir = tempfile.mkdtemp()
-        frame_paths = []
-        frame_ai_scores = []
-        frame_reasons = []
-        combined_score = 0
-
-        # Adaptive Sampling: 1 (Ultra-Lite), 8 (Deep/Accurate), 3 (Standard)
-        if low_resource:
-            num_samples = 1
-        elif deep_scan:
-            num_samples = 8
-        else:
-            num_samples = 3
+        duration = min(frame_count / fps, 10.0)
         
+        frames_dir = tempfile.mkdtemp()
+        frame_paths, frame_ai_scores, frame_reasons = [], [], []
+        eye_paths, skin_signals, mar_values = [], [], []
+        structural_hits = 0
+        audio_analyzed = False
+
+        # Increased sampling for rPPG Nyquist (Need ~6fps for heart rate)
+        # Increased sampling to 60 for rPPG Nyquist in standard mode (Need ~6fps for heart rate)
+        num_samples = 60 if not low_resource else 1
         sample_times = np.linspace(0, max(duration - 0.1, 0), num_samples)
 
-        # ── Step 1: Fast heuristic & Laplacian Noise Scan ────────────────────
-        print(f"[VIDEO] ⏱ Step 1: Scanning {len(sample_times)} frames...")
+        # ── Step 1: Scanning frames ────────────────────
         raw_frames = []
         for t in sample_times:
-            frame_path = os.path.join(frames_dir, f"frame_{t:.1f}.jpg")
-            try:
-                cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
-                ret, frame = cap.read()
-                if ret:
-                    cv2.imwrite(frame_path, frame)
-                    h_score = _fast_heuristic_score(frame_path)
-                    
-                    # NEW: Laplacian Noise Check (finds edge discontinuities from morphing)
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-                    # Morphed/compressed frames often have unnaturally low Laplacian variance
-                    if laplacian_var < 80: h_score += 20
-                    
-                    raw_frames.append((t, frame_path, h_score, laplacian_var))
-                    print(f"[VIDEO]   Frame {t:.1f}s → heuristic={h_score} (Laplacian={laplacian_var:.1f})")
-            except Exception:
-                pass
+            frame_path = os.path.join(frames_dir, f"f_{t:.1f}.jpg")
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+            ret, frame = cap.read()
+            if ret:
+                cv2.imwrite(frame_path, frame)
+                h_score = _fast_heuristic_score(frame_path)
+                
+                # Laplacian Noise Check
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+                if lap_var < 80: h_score += 20
+                raw_frames.append((t, frame_path, h_score))
 
         cap.release()
-        print(f"[VIDEO] ✅ Step 1 done: {time.time()-t0:.1f}s elapsed")
 
-        # ── Step 2: Adaptive routing based on frame score variance ───────────
-        heuristic_scores = [s for _, _, s, _ in raw_frames]
-        score_variance = float(np.std(heuristic_scores)) if len(heuristic_scores) > 1 else 0
-        print(f"[VIDEO] ⏱ Step 2: Variance={score_variance:.1f} → {'FULL ViT ALL frames' if score_variance >= 15 else 'ViT on top-2 only'}")
-
-        if score_variance >= 15:
-            deep_set = set(fp for _, fp, _, _ in raw_frames)
-            frame_reasons.append(
-                f"⚠️ High variance (std={score_variance:.1f}) — possible splice. "
-                f"Running full ViT on all {len(raw_frames)} frames."
-            )
+        # ── Step 2: Adaptive routing ───────────────────
+        h_scores = [s for _, _, s in raw_frames]
+        score_var = float(np.std(h_scores)) if len(h_scores) > 1 else 0
+        
+        deep_set = []
+        if score_var >= 15:
+            deep_set = [fp for _, fp, _ in raw_frames]
+            frame_reasons.append(f"High variance detected (std={score_var:.1f})")
         else:
-            sorted_frames = sorted(raw_frames, key=lambda x: x[2], reverse=True)
-            deep_set = set(fp for _, fp, _, _ in sorted_frames[:2])
-            frame_reasons.append(
-                f"Uniform content (std={score_variance:.1f}) — "
-                f"deep ViT on 2 key frames, heuristic for rest."
-            )
+            sorted_raw = sorted(raw_frames, key=lambda x: x[2], reverse=True)
+            deep_set = [fp for _, fp, _ in sorted_raw[:2]]
 
-        # ── Step 3: Deep ViT on selected, heuristic on rest ──────────────────
-        print(f"[VIDEO] ⏱ Step 3: Deep ViT analysis ({len(deep_set)} frames selected)...")
-        for t, frame_path, h_score, lap_res in raw_frames:
-            if frame_path in deep_set:
-                print(f"[VIDEO]   ViT → Frame {t:.1f}s...")
-                vit_t = time.time()
-                img_res = analyze_image(frame_path)
-                score = img_res['score']
-                print(f"[VIDEO]   ViT done: {time.time()-vit_t:.1f}s → score={score}")
-                frame_reasons.extend([f"Frame {t:.1f}s: {r}" for r in img_res['reasons']])
+        # ── Step 3: Deep Analysis (ML & Biometrics) ──────
+        # We always scan ALL sampled frames for liveness (it's fast)
+        # but only do heavyweight ViT on the "deep_set" candidates.
+        for t, f_path, h_score in raw_frames:
+            roi = _get_face_crop(f_path)
+            
+            if f_path in deep_set or roi['is_face']:
+                # ViT deep-fake detector (heavy)
+                if f_path in deep_set:
+                    anal_path = roi['face']
+                    img_res = analyze_image(anal_path)
+                    score = img_res['score']
+                    frame_reasons.extend(img_res.get('reasons', []))
+                    if img_res['metrics'].get('structural_artifact'):
+                        structural_hits += 1
+                    
+                    if anal_path != f_path:
+                        try: os.remove(anal_path)
+                        except: pass
+                else:
+                    score = h_score
+                
+                # Biometrics (fast)
+                if roi['is_face']:
+                    # Teeth & Eyes
+                    teeth_v = _analyze_mouth_sharpness(roi['mouth'])
+                    if teeth_v < 60: score += 15
+                    eye_paths.append(roi['eyes'])
+                    # Mouth Aspect (for Lip-Sync)
+                    mar_values.append(_analyze_mouth_aspect_ratio(roi['mouth']))
+                    # Pulse Liveness (Green channel periodicity)
+                    f_img = cv2.imread(roi['face'])
+                    if f_img is not None: skin_signals.append(float(np.mean(f_img[:,:,1])))
             else:
                 score = h_score
-                print(f"[VIDEO]   Heuristic → Frame {t:.1f}s → score={score}")
-            frame_paths.append(frame_path)
+            
+            frame_paths.append(f_path)
             frame_ai_scores.append(score)
 
-        print(f"[VIDEO] ✅ Step 3 done: {time.time()-t0:.1f}s elapsed")
-
-        results['frames_analyzed'] = len(frame_paths)
-        results['ai_frame_scores'] = frame_ai_scores
-
-        avg_frame_score = int(np.mean(frame_ai_scores)) if frame_ai_scores else 0
-
-        # SSIM temporal consistency
-        ssim_res = {'ssim_mean': 1.0, 'ssim_std': 0.0, 'anomaly': False}
-        if not low_resource:
-            print(f"[VIDEO] ⏱ Step 4: SSIM computation...")
-            ssim_res = _compute_ssim_sequence(frame_paths)
-            results['ssim'] = ssim_res
-            print(f"[VIDEO] ✅ SSIM done: {time.time()-t0:.1f}s elapsed | anomaly={ssim_res['anomaly']}")
-            if ssim_res['anomaly']:
-                combined_score += 20
-                frame_reasons.append(
-                    f"Temporal inconsistency detected (SSIM std={ssim_res['ssim_std']:.3f}) "
-                    f"— abrupt structural changes between frames"
-                )
-
-            # NEW: Optical Flow Anomaly check
-            print(f"[VIDEO] ⏱ Step 5: Optical Flow analysis...")
-            flow_res = _compute_optical_flow_anomaly(frame_paths)
-            results['optical_flow'] = flow_res
-            if flow_res['anomaly']:
-                combined_score += 25
-                frame_reasons.append(
-                    f"Optical Flow Anomaly detected (std={flow_res['flow_std']:.3f}) "
-                    f"— unnatural motion warping / pixel sliding identified"
-                )
-
-        # Cleanup frames
-        for fp in frame_paths:
-            try:
-                os.remove(fp)
-            except Exception:
-                pass
-
-
-        # Enhanced audio analysis (Skip if no audio or error)
-        audio_score = 0
-        audio_reasons = []
-        # Audio extraction via ffmpeg directly is better than MoviePy for resource management
-        audio_path = os.path.join(frames_dir, "temp_audio_ai.wav")
+        # ── Step 4 & 5: SSIM & Flow ────────────────────
+        ssim_res = _compute_ssim_sequence(frame_paths) if not low_resource else {'anomaly': False}
+        flow_res = _compute_optical_flow_anomaly(frame_paths) if not low_resource else {'anomaly': False}
+        eye_data = _analyze_eye_variance(eye_paths)
+        eye_var = eye_data['var']
+        blink_count = eye_data['blinks']
+        
+        # ── Step 5.1: rPPG Periodicity (FFT) ───────────
+        liveness_anomaly = False
+        if len(skin_signals) >= 15:
+            sig = np.array(skin_signals) - np.mean(skin_signals)
+            fft_p = np.abs(np.fft.rfft(sig))
+            # Focus on 0.8 Hz - 3.5 Hz range (Human pulse range)
+            # With 6 fps (60 samples in 10s), index 1 is ~0.1Hz, index 10 is ~1.0Hz
+            # Pulse Liveness (Green channel periodicity)
+            # High-confidence: Peak must be at least 3x the average noise floor
+            fft_p = np.abs(np.fft.fft(skin_signals))
+            if np.max(fft_p) < np.mean(fft_p) * 3.0:
+                liveness_anomaly = True
+        
+        # ── Step 6: Audio & Lip-Sync Correlation ──
+        audio_score, audio_reasons = 0, []
+        audio_path = os.path.join(frames_dir, "aud.wav")
+        audio_env = []
         try:
-            # -vn: no video, -y: overwrite
             import subprocess
-            subprocess.run(
-                ['ffmpeg', '-i', file_path, '-vn', '-t', '10',
-                 '-acodec', 'pcm_s16le', '-ar', '8000', '-ac', '1', audio_path, '-y'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
-            )
-            
+            subprocess.run(['ffmpeg', '-i', file_path, '-vn', '-t', '10', '-ar', '8000', audio_path, '-y'], 
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
             if os.path.exists(audio_path):
                 aud_res = analyze_audio(audio_path)
-                audio_score = aud_res['score']
-                audio_reasons = aud_res.get('reasons', [])
-                os.remove(audio_path)
-                results['audio_analyzed'] = True
-            else:
-                # No audio = indicator of raw AI video
-                audio_score = 60
-                audio_reasons.append("No audio track detected.")
-        except Exception:
-            # Fallback
-            audio_reasons.append("Audio analysis unavailable (possible silent track).")
+                audio_score, audio_reasons = aud_res['score'], aud_res.get('reasons', [])
+                audio_analyzed = True
+                
+                from modules.audio import get_audio_envelope
+                audio_env = get_audio_envelope(audio_path, num_points=len(mar_values))
+        except Exception: pass
+        
+        # ── Step 6.1: AV-Correlation (Lip-Sync Detection) ──
+        lip_sync_risk = 0
+        if len(mar_values) >= 15 and len(audio_env) == len(mar_values):
+            # Normalize signals
+            norm_mar = (np.array(mar_values) - np.mean(mar_values)) / (np.std(mar_values) + 1e-9)
+            norm_aud = (np.array(audio_env) - np.mean(audio_env)) / (np.std(audio_env) + 1e-9)
+            correlation = float(np.mean(norm_mar * norm_aud))
+            
+            # Real speech has correlation ~0.3-0.8 with envelope
+            if correlation < 0.1 and not low_resource:
+                lip_sync_risk += 35
+                frame_reasons.append(f"AV Anomaly: Poor lip-sync correlation ({correlation:.2f}) — hallmarks of voiceover/swap.")
+            elif correlation < 0.2:
+                lip_sync_risk += 20
+                frame_reasons.append(f"AV Weakness: Low mouth-audio correlation ({correlation:.2f})")
 
-        # Final cleanup
-        try:
-            os.rmdir(frames_dir)
-        except Exception:
-            pass
-
-        # Accuracy Boost: Prioritize the most suspicious frame (MAX) + average weight
-        max_frame_score = int(np.max(frame_ai_scores)) if frame_ai_scores else 0
-        avg_frame_score = int(np.mean(frame_ai_scores)) if frame_ai_scores else 0
-
-        # Consistency bonus: if multiple frames all flag AI, it's a very strong signal
-        high_frames = sum(1 for s in frame_ai_scores if s >= 40)
-        consistency_bonus = 0
-        if len(frame_ai_scores) >= 3 and high_frames >= 3:
-            consistency_bonus = 20
-            frame_reasons.append(f"Multi-frame consistency: {high_frames}/{len(frame_ai_scores)} frames flagged AI — strong synthesis indicator")
-        elif len(frame_ai_scores) >= 2 and high_frames >= 2:
-            consistency_bonus = 10
-
-        # Core score: max-biased + consistency
-        core_visual_score = int(max_frame_score * 0.8 + avg_frame_score * 0.2) + consistency_bonus
-        core_visual_score = min(100, core_visual_score)
-
-        # Metadata Check
-        from modules.metadata import check_video_metadata
+        # ── Step 7: Metadata ───────────────────────────
         meta_res = check_video_metadata(file_path)
         meta_score = meta_res.get('score', 0)
+        frame_reasons.extend(meta_res.get('reasons', []))
 
-        # Smart weight redistribution when tools unavailable
-        # meta_score >= 20 means real forensic evidence was found (not just a failed scan default of 10)
-        audio_available = results.get('audio_analyzed', False)
-        meta_real = meta_score >= 20
-        if audio_available and meta_real:
-            combined_score += int(core_visual_score * 0.6 + audio_score * 0.2 + meta_score * 0.2)
-        elif audio_available:
-            combined_score += int(core_visual_score * 0.75 + audio_score * 0.25)
-        elif meta_real:
-            combined_score += int(core_visual_score * 0.75 + meta_score * 0.25)
-        else:
-            # Neither audio nor real metadata — trust visual fully
-            combined_score += core_visual_score
+        # Final Scoring Assembly
+        max_f = max(frame_ai_scores) if frame_ai_scores else 0
+        avg_f = np.mean(frame_ai_scores) if frame_ai_scores else 0
+        ai_synth = int(max_f * 0.8 + avg_f * 0.2)
+        
+        manip_score = 0
+        if ssim_res.get('anomaly'): manip_score += 30
+        if flow_res.get('anomaly'): manip_score += 25
+        
+        # Boost manip score based on liveness indicators
+        liveness_risk = 0
+        if liveness_anomaly: 
+            liveness_risk += 35
+            frame_reasons.append("Biological Anomaly: Skin chrominance lacks human pulse periodicity (FFT)")
+        if blink_count == 0 and not low_resource and len(eye_paths) >= 5:
+            liveness_risk += 30
+            frame_reasons.append("Liveness Anomaly: Zero eye-blinks detected over 10s sample")
+        elif eye_var < 0.6:
+            liveness_risk += 20
+            frame_reasons.append("Liveness Anomaly: Eyes appear unnaturally static")
 
-        if audio_score >= 80 or max_frame_score >= 80 or meta_score >= 70:
-            combined_score = max(combined_score, max(audio_score, max_frame_score, meta_score))
+        # ── Step 8: Biological Override ───────────────
+        enough_liveness_data = len(skin_signals) >= ForensicConfig.MIN_LIVENESS_SIGNALS and len(eye_paths) >= ForensicConfig.MIN_LIVENESS_FACES
+        bio_override = False
+        has_grids = structural_hits >= 1
+        
+        # SKEPTICAL OVERRIDE
+        if enough_liveness_data and not liveness_anomaly and blink_count >= ForensicConfig.BLINK_MIN_HUMAN and ai_synth < ForensicConfig.AI_SYNTH_STRONG_THRESHOLD and not has_grids:
+            bio_override = True
+            reduction = ForensicConfig.LIVENESS_CONFIRMED_FACTOR
+            ai_synth = int(ai_synth * reduction)
+            audio_score = int(audio_score * reduction)
+            meta_score = int(meta_score * reduction)
+            manip_score = int(manip_score * reduction)
+            lip_sync_risk = int(lip_sync_risk * reduction)
+        elif enough_liveness_data and not liveness_anomaly and blink_count >= 1:
+            reduction = ForensicConfig.LIVENESS_PARTIAL_FACTOR
+            ai_synth = int(ai_synth * reduction)
+            lip_sync_risk = int(lip_sync_risk * reduction)
 
-        # --- Signal Separation (Final Tier Upgrade) ---
-        ai_synthesis_score = min(100, core_visual_score)
-        # Manipulation score derived from temporal inconsistency + metadata anomalies
-        temporal_score = 40 if ssim_res.get('anomaly', False) else 0
-        manip_score = min(100, temporal_score + meta_score)
+        if bio_override:
+            frame_reasons.append("Verification: Multimodal liveness (blinks + pulse) confirms biological authenticity. Risk signals reduced.")
+        
+        # ── Step 9: Final Score Consolidation ──────────
+        if not enough_liveness_data:
+            liveness_risk = ForensicConfig.LACK_OF_DATA_PENALTY
+            
+        final_score = int(min(100, max(ai_synth, manip_score + liveness_risk + lip_sync_risk, audio_score, meta_score)))
+        
+        # TIER 3: Low-Confidence Filtering (Safety Floor)
+        has_strong_evidence = ai_synth > ForensicConfig.AI_SYNTH_EVIDENCE_THRESHOLD or has_grids or (enough_liveness_data and liveness_anomaly)
+        if final_score < ForensicConfig.SAFETY_CAP_SCORE_LIMIT and not has_strong_evidence:
+            final_score = min(final_score, ForensicConfig.SAFETY_CAP_RESULT)
+            
+        # Final Verdict
+        res = {
+            'score': int(final_score),
+            'risk_level': 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low',
+            'reasons': sorted(list(set(frame_reasons + list(audio_reasons)))), 
+            'metadata': meta_res,
+            'metrics': {
+                'ai_probability': int(ai_synth),
+                'temporal_anomaly': bool(ssim_res['anomaly']),
+                'ssim_std': float(round(float(ssim_res.get('ssim_std', 0.0)), 4)),
+                'audio_score': int(audio_score),
+                'meta_score': int(meta_score),
+                'structural_artifact': bool(has_grids),
+                'blink_count': int(blink_count),
+                'liveness_override': bool(bio_override)
+            }
+        }
 
-        results['score'] = min(100, int(max(ai_synthesis_score, manip_score, audio_score)))
-        results['ai_gen_score'] = ai_synthesis_score
-        results['manip_score'] = manip_score
-        results['risk_level'] = 'High' if results['score'] >= 60 else 'Medium' if results['score'] >= 30 else 'Low'
-        results['reasons'] = frame_reasons[:5] + audio_reasons + meta_res.get('reasons', [])
-        return results
+        # Cleanup
+        for fp in frame_paths:
+            if os.path.exists(fp): 
+                try: os.remove(fp)
+                except: pass
+        for ep in eye_paths:
+            if ep and os.path.exists(ep): 
+                try: os.remove(ep)
+                except: pass
+        try: os.rmdir(frames_dir)
+        except: pass
+
+        return res
 
     except Exception as e:
-        results['reasons'].append(f"Video processing error: {str(e)}")
-        return results
+        log.error(f"Error: {str(e)}")
+        return {'score': 0, 'risk_level': 'Low', 'reasons': [f"Critical error: {str(e)}"], 'metrics': {}}

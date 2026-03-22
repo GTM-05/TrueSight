@@ -18,15 +18,40 @@ def generate_final_verdict_ai(all_evidence: dict, skip_llm: bool = False, model:
     vid_ai = all_evidence.get('Video', {}).get('ai_gen_score', vid_score)
     vid_manip = all_evidence.get('Video', {}).get('manip_score', vid_score)
 
+    # Optional: Extract flicker and lip-sync scores from Video evidence if present
+    vid_flicker = all_evidence.get('Video', {}).get('flicker_score', 0)
+    vid_lip = all_evidence.get('Video', {}).get('lip_sync_score', 0)
+    vid_meta = all_evidence.get('Video', {}).get('meta_score', 0)
+    vid_int_aud = all_evidence.get('Video', {}).get('internal_audio_score', 0)
+
     threat_found = any(mod.get('threats', {}).get('score', 0) > 0 for mod in all_evidence.values())
-    raw_score = (0.35*float(img_score) + 0.25*float(aud_score) + 0.25*float(vid_score) + 0.15*float(url_score))
+    
+    # --- Max-Biased Fusion Optimization ---
+    # weighted_avg is the traditional baseline
+    weighted_avg = (0.35*float(img_score) + 0.25*float(aud_score) + 0.25*float(vid_score) + 0.15*float(url_score))
+    
+    # max_module_score is the single most suspicious finding
+    # We include vid_flicker and vid_lip in the max check
+    max_module_score = float(max(img_score, aud_score, vid_score, url_score, vid_flicker, vid_lip))
+    
+    # If any module is high risk (>=60), the final score should reflect that high risk,
+    # rather than being averaged down by unrelated components.
+    if max_module_score >= 60:
+        # Heavily bias towards the high-risk finding
+        raw_score = max_module_score * 0.9 + (weighted_avg * 0.1)
+    elif max_module_score >= 30:
+        # Medium risk bias
+        raw_score = max_module_score * 0.7 + (weighted_avg * 0.3)
+    else:
+        raw_score = weighted_avg
+
     final_score = int(min(100.0, max(0.0, raw_score)))
     if threat_found: final_score = 100
     confidence = int(abs((final_score / 100.0) - 0.5) * 2 * 100)
     verdict_level = 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low'
 
     if skip_llm:
-        # Generate a structured technical summary for Turbo Mode
+        # ... [TURBO summary logic remains same] ...
         summary = f"### [TURBO] FORENSIC TECHNICAL SUMMARY\n\n"
         summary += f"**Final Risk Score:** {final_score}% ({verdict_level} Threat Detected)\n"
         summary += f"**Confidence Level:** {confidence}%\n\n"
@@ -47,9 +72,10 @@ def generate_final_verdict_ai(all_evidence: dict, skip_llm: bool = False, model:
 
     return {
         'threat_score': 100 if threat_found else 0,
-        'ai_generated_score': int(max(img_ai, aud_score, vid_ai)),
-        # FINAL TIER ACCURACY: Boost manipulation score if temporal anomalies are found in video
-        'manipulation_score': int(max(img_manip, vid_manip * 1.2, url_score)),
+        'ai_generated_score': int(max(img_ai, aud_score, vid_ai, vid_int_aud)),
+        # FINAL TIER ACCURACY: Boost manipulation score if temporal/flicker/lip-sync anomalies are found
+        # Include metadata score in manipulation/suspicion category
+        'manipulation_score': int(max(img_manip, vid_manip, url_score, vid_flicker * 1.1, vid_lip * 1.1, vid_meta)),
         'final_score': final_score,
         'risk_level': verdict_level,
         'confidence': f"{confidence}%",

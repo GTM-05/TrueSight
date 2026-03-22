@@ -106,9 +106,23 @@ def check_video_metadata(video_path):
             reasons.append("Highly suspicious: Sparse or missing global metadata tags. Common in raw AI video output.")
             
         # 3. Check for specific AI generator markers (rare but possible)
-        if any(k in str(tags).lower() for k in ['sora', 'runway', 'pika', 'stable-video']):
+        if any(k in str(tags).lower() for k in ['sora', 'runway', 'pika', 'stable-video', 'kling']):
             score += 90
             reasons.append("CRITICAL: AI Generator signatures found in metadata.")
+
+        # 4. Raw Binary C2PA / OpenAI Signature Scan
+        try:
+            with open(video_path, 'rb') as f:
+                head = f.read(1024 * 1024) # Read 1st MB
+                if b"C2PA" in head or b"c2pa" in head:
+                    # C2PA is for provenance; it can be AI OR authentic.
+                    # We add a small "unclear" penalty but not a "High Risk" one unless it's explicitly OpenAI.
+                    score += 15 
+                    reasons.append("C2PA Content Credentials found (indicative of digital origin or signature).")
+                if b"OpenAI" in head:
+                    score += 70
+                    reasons.append("OpenAI internal signature found in video binary (strong indicator of Sora/DALL-E).")
+        except: pass
 
     except Exception as e:
         score += 10

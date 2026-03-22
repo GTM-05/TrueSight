@@ -5,49 +5,37 @@ TrueSight is a **local, offline AI-powered cyber forensics tool** for detecting 
 
 ---
 
-## Architecture Principle
+## 2. Decision Intelligence
 
-```
-Media Input
-    │
-    ├── 🖼️ Image Module (ViT + ELA + EXIF)
-    ├── 🔊 Audio Module (Pitch + MFCC + Spectral)
-    ├── 🎥 Video Module (ViT + SSIM + ffprobe + audio)
-    └── 🌐 URL Module (Entropy + Homograph + DGA)
-                        │
-                        ▼
-         Numerical Scores (0–100 per modality)
-                        │
-                        ▼
-     ⚙️ Fusion Engine (Weighted Maths — Decision Layer)
-        final = 0.35×img + 0.25×aud + 0.25×vid + 0.15×url
-                        │
-                        ▼
-         🧠 Phi-3 Mini (Explanation Layer ONLY)
-         → Generates structured forensic narrative
-                        │
-                        ▼
-              📄 PDF Report Download
-```
+### A. Modular Analysis
+Each module (Image, Audio, Video, URL) returns a score from **0 to 100**.
 
-> **Key Rule**: The LLM **never makes the verdict**. The Fusion Engine makes the decision; Qwen2 only writes the explanation.
+### B. Max-Biased Fusion (`fusion/engine.py`)
+To prevent dangerous AI signals from being averaged out by clean signals in other modalities, TrueSight uses a **Max-Biased Fusion** logic:
+
+1. **Calculate Weighted Baseline**:
+   `weighted_avg = (0.35×Img + 0.25×Aud + 0.25×Vid + 0.15×URL)`
+2. **Determine Peak Suspicion**:
+   `max_score = max(Img, Aud, Vid, URL, Vid_Flicker, Vid_LipSync)`
+3. **Biased Final Score**:
+   - If `max_score ≥ 60`: `Final = max_score × 0.9 + (weighted_avg × 0.1)`
+   - If `max_score ≥ 30`: `Final = max_score × 0.7 + (weighted_avg × 0.3)`
+   - Otherwise: `Final = weighted_avg`
+
+### C. The 19% Safety Floor
+If the `Final Score < 75` and no **Strong Forensic Anchors** (FFT Grids, High ViT, or Pulse Anomaly) are found, the score is capped at **19% (Low Risk)**.
 
 ---
 
-## Module Responsibilities
+## 3. Forensic Thresholds (ForensicConfig)
 
-| File | Role | Techniques |
+| Constant | Value | Role |
 |---|---|---|
-| `app.py` | UI + orchestration | Streamlit |
-| `modules/image.py` | Image forensics | ViT (`prithivMLmods/Deep-Fake-Detector-Model`), ELA, EXIF |
-| `modules/audio.py` | Audio forensics | Pitch std, MFCC delta, RMS energy, spectral centroid/rolloff/flatness |
-| `modules/video.py` | Video forensics | Frame ViT, SSIM consistency, Optical Flow Anomaly, ffprobe metadata |
-| `modules/url.py` | URL forensics | Shannon entropy, homograph detection, DGA, shortener heuristics |
-| `modules/metadata.py` | EXIF + video tags | exifread, ffprobe JSON |
-| `modules/threats.py` | Malware scan | File signature, entropy, extension mismatch |
-| `fusion/engine.py` | **Decision Layer** | Weighted formula + confidence computation |
-| `llm/llm.py` | **Explanation Layer** | Qwen2 (0.5B) via Ollama |
-| `reports/generator.py` | PDF export | reportlab |
+| `AI_SYNTH_STRONG` | 45% | Definitive AI probability threshold. |
+| `GRID_PEAK_RATIO` | 120 | FFT Spectral Peak sensitivity. |
+| `SAFETY_CAP_LIMIT` | 75% | Threshold for applying the noise floor. |
+| `SAFETY_CAP_VAL` | 19% | Final low-risk score for noise. |
+| `LACK_DATA_PENALTY`| 15% | Penalty for missing biometric data. |
 
 ---
 
