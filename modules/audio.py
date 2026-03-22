@@ -1,299 +1,479 @@
 """
-modules/audio_ai.py — AI-Enhanced Audio Analysis for app-ai.py
+TrueSight — Strong Audio Forensics Module
+modules/audio.py
 
-Extends the original audio.py with advanced features that more accurately
-detect TTS-cloned and AI-synthesized voices:
-
-  - Pitch monotonicity (TTS is unnaturally consistent in pitch)
-  - MFCC delta / delta-delta (rate of change — TTS is smoother than human)
-  - Energy consistency (TTS has machine-flat RMS across segments)
-  - Voiced/unvoiced ratio (TTS lacks the natural breath/silence variation)
-  - Spectral roll-off variance (human voice shifts more dynamically)
-
-No external ML model needed — these features are computed via librosa.
-Scikit-learn IsolationForest used for unsupervised anomaly scoring.
+Multi-layer vocal forensics: pitch, silence, spectral, formant, phase, AV-sync.
+All analysis is offline, Librosa/NumPy/SciPy only — no external model required.
 """
 
 import numpy as np
+import librosa
+import cv2
+from scipy.signal import butter, filtfilt, find_peaks, hilbert
+from scipy.stats import kurtosis, skew
+from dataclasses import dataclass, field
+from typing import Optional
+import warnings
 
-try:
-    import librosa
-    LIBROSA_OK = True
-except ImportError:
-    LIBROSA_OK = False
-
-
-def _extract_advanced_features(y, sr):
-    """Extracts a rich feature vector from an audio signal (speed-optimized)."""
-    features = {}
-    if not LIBROSA_OK:
-        return features
-
-    # Downsample to 8kHz for 2x speed improvement (sufficient for voice features)
-    if sr > 8000:
-        y = librosa.resample(y, orig_sr=sr, target_sr=8000)
-        sr = 8000
-
-    # Limit to 10s max to keep processing fast
-    max_samples = sr * 10
-    if len(y) > max_samples:
-        y = y[:max_samples]
-
-    # MFCCs + delta (20 coefficients to capture fine vocal tract details)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)
-    mfcc_delta = librosa.feature.delta(mfcc)
-    features['mfcc_delta_std'] = float(np.std(mfcc_delta))
-
-    # Pitch (F0) — fundamental frequency
-    try:
-        f0, voiced_flag, _ = librosa.pyin(
-            y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'),
-            sr=sr, fill_na=0.0
-        )
-        voiced_f0 = f0[voiced_flag > 0]
-        if len(voiced_f0) > 10:
-            features['pitch_std'] = float(np.std(voiced_f0))        # Low = TTS robotic
-            features['pitch_mean'] = float(np.mean(voiced_f0))
-            features['voiced_ratio'] = float(np.sum(voiced_flag) / len(voiced_flag))
-        else:
-            features['pitch_std'] = 0.0
-            features['pitch_mean'] = 0.0
-            features['voiced_ratio'] = 0.0
-    except Exception:
-        features['pitch_std'] = 0.0
-        features['pitch_mean'] = 0.0
-        features['voiced_ratio'] = 0.0
-
-    # RMS energy consistency (TTS has unnaturally flat energy)
-    rms = librosa.feature.rms(y=y)
-    features['rms_std'] = float(np.std(rms))                       # Low = TTS
-    features['rms_mean'] = float(np.mean(rms))
-
-    # Spectral features
-    spec_rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)
-    spec_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
-    features['rolloff_std'] = float(np.std(spec_rolloff))          # Low = TTS
-    features['centroid_std'] = float(np.std(spec_centroid))
-    features['spectral_flatness'] = float(np.mean(librosa.feature.spectral_flatness(y=y)))
-
-    # Spectral Flux (Dynamic variation of spectrum)
-    spec_flux = np.sqrt(np.mean(np.diff(librosa.feature.spectral_centroid(y=y, sr=sr))**2))
-    features['spec_flux'] = float(spec_flux)                      # Low = TTS (static tone)
-
-    # Shannon Entropy of Spectral magnitude
-    stft = np.abs(librosa.stft(y))
-    power = stft**2
-    sum_power = np.sum(power, axis=0) + 1e-9
-    prob = power / sum_power
-    entropy = -np.sum(prob * np.log(prob + 1e-9), axis=0)
-    features['spectral_entropy'] = float(np.mean(entropy))        # Low = AI periodcity
-
-    zcr = librosa.feature.zero_crossing_rate(y)
-    features['zcr_std'] = float(np.std(zcr))
-
-    # SNR estimate
-    noise_floor = np.percentile(np.abs(y), 10)
-    signal_level = np.percentile(np.abs(y), 90)
-    # High-Frequency Ratio (AI vocoders often miss 8kHz+ or have gaps)
-    # Spectral Spike Detection (Hallmark of AI Vocoders)
-    stft_full = np.abs(librosa.stft(y))
-    power_spectrum = np.mean(stft_full, axis=1)
-    if len(power_spectrum) > 30:
-        spike_ratio = np.max(power_spectrum) / (np.mean(power_spectrum) + 1e-9)
-        features['spike_ratio'] = float(spike_ratio)
-        # HFR: Ratio of high (>6kHz) to mid (1-4kHz) energy
-        h_idx = int(0.75 * len(power_spectrum))
-        m_idx = int(0.25 * len(power_spectrum))
-        features['hfr'] = float(np.mean(power_spectrum[h_idx:]) / (np.mean(power_spectrum[m_idx:h_idx]) + 1e-9))
-    else:
-        features['spike_ratio'] = 0.0
-        features['hfr'] = 0.0
-
-    return features
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
-def _score_from_features(features: dict) -> tuple:
+# ─────────────────────────────────────────────────────────────────
+#  Config
+# ─────────────────────────────────────────────────────────────────
+@dataclass
+class AudioForensicConfig:
+    # Pitch / F0
+    F0_MIN_HZ: float = 60.0
+    F0_MAX_HZ: float = 400.0
+    JITTER_SYNTHETIC_THRESHOLD: float = 0.012   # Below = robotic
+    SHIMMER_SYNTHETIC_THRESHOLD: float = 0.04   # Below = robotic
+    PITCH_MONOTONE_VAR_THRESHOLD: float = 15.0  # Hz std — very flat = TTS
+
+    # Silence / noise floor
+    SILENCE_RMS_THRESHOLD: float = 0.0018       # Digital-zero silence floor
+    SILENCE_NOISE_STD_MAX: float = 0.0004       # Real mics always have noise
+    DIGITAL_SILENCE_RATIO_MIN: float = 0.08     # > 8 % digital-zero = suspicious
+
+    # Spectral
+    SPECTRAL_FLATNESS_TTS_MIN: float = 0.13     # Vocoders: flat spectra
+    SPECTRAL_ROLLOFF_AI_MIN: float = 0.78       # AI audio rolls off less naturally
+
+    # MFCC / Formant transitions
+    MFCC_ABRUPT_PERCENTILE: float = 97.0
+    MFCC_ABRUPT_RATIO_MAX: float = 0.038
+
+    # Phase / Edit cuts
+    PHASE_DISC_WINDOW: int = 2048
+    PHASE_DISC_THRESHOLD: float = 1.4           # Radians — sudden wrap = splice
+
+    # Sample rate fingerprint (TTS defaults)
+    TTS_SAMPLE_RATES: tuple = (22050, 24000, 16000)
+    HUMAN_SAMPLE_RATES: tuple = (44100, 48000, 96000)
+
+    # Harmonic structure
+    HNR_SYNTHETIC_MIN: float = 22.0             # TTS > 22 dB HNR (too clean)
+
+    # Minimum audio length (seconds) for reliable analysis
+    MIN_AUDIO_DURATION: float = 2.0
+
+    # Risk weights per detector
+    WEIGHTS: dict = field(default_factory=lambda: {
+        "pitch_jitter":        30,
+        "pitch_shimmer":       20,
+        "pitch_monotone":      20,
+        "digital_silence":     25,
+        "spectral_flatness":   20,
+        "spectral_rolloff":    15,
+        "formant_transitions": 20,
+        "phase_discontinuity": 35,
+        "sample_rate_flag":    10,
+        "hnr_too_clean":       20,
+        "mfcc_delta_flatness": 15,
+    })
+
+
+CFG = AudioForensicConfig()
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Helper utilities
+# ─────────────────────────────────────────────────────────────────
+def _bandpass(signal: np.ndarray, lo: float, hi: float, sr: int,
+              order: int = 4) -> np.ndarray:
+    nyq = sr / 2.0
+    b, a = butter(order, [lo / nyq, hi / nyq], btype="band")
+    return filtfilt(b, a, signal)
+
+
+def _hnr(y: np.ndarray, sr: int, frame_len: int = 2048,
+         hop: int = 512) -> float:
+    """Harmonic-to-Noise Ratio via autocorrelation."""
+    frames = librosa.util.frame(y, frame_length=frame_len, hop_length=hop)
+    hnr_vals = []
+    for f in frames.T:
+        acf = np.correlate(f, f, mode="full")[frame_len - 1:]
+        if acf[0] < 1e-10:
+            continue
+        acf /= acf[0]
+        peaks, _ = find_peaks(acf[1:], height=0.1)
+        if len(peaks) == 0:
+            continue
+        r0 = acf[0]
+        r1 = acf[peaks[0] + 1]
+        if r1 >= r0:
+            continue
+        hnr_vals.append(10 * np.log10(r1 / (r0 - r1 + 1e-10)))
+    return float(np.median(hnr_vals)) if hnr_vals else 0.0
+
+
+def _phase_discontinuities(y: np.ndarray, sr: int,
+                            win: int = 2048, hop: int = 512) -> list[float]:
+    """Detect abrupt phase wraps — signatures of audio edit splices."""
+    stft = librosa.stft(y, n_fft=win, hop_length=hop)
+    phase = np.angle(stft)
+    phase_diff = np.diff(phase, axis=1)
+    # Instantaneous frequency deviation
+    ifd = np.abs(phase_diff - np.median(phase_diff, axis=1, keepdims=True))
+    # Mean IFD per frame
+    return list(np.mean(ifd, axis=0))
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Individual detectors
+# ─────────────────────────────────────────────────────────────────
+
+def detect_pitch_anomalies(y: np.ndarray, sr: int) -> dict:
     """
-    Scores TTS/synthetic likelihood from the extracted features.
-    Returns (score 0-100, list of reason strings).
+    F0 jitter, shimmer, and monotone detection.
+    Human speech: jitter > 1.2 %, shimmer > 4 %, std(F0) > 15 Hz.
+    TTS / VC: suspiciously stable and clean.
     """
-    score = 0
+    risk = 0
     reasons = []
 
-    # Pitch monotonicity: human speech std > ~30 Hz; TTS ~5-15 Hz
-    pitch_std = features.get('pitch_std', 0)
-    if 0 < pitch_std < 15:
-        score += 30
-        reasons.append(f"Unnaturally monotone pitch (std={pitch_std:.1f} Hz) — strong TTS/clone indicator")
-    elif 0 < pitch_std < 25:
-        score += 15
-        reasons.append(f"Low pitch variance (std={pitch_std:.1f} Hz) — possible synthetic voice")
+    f0 = librosa.yin(y, fmin=CFG.F0_MIN_HZ, fmax=CFG.F0_MAX_HZ, sr=sr)
+    voiced = f0[f0 > CFG.F0_MIN_HZ]
 
-    # MFCC delta smoothness: TTS transitions too cleanly
-    # IMPORTANT: Skip if audio is silent/near-silent (delta std would be 0 naturally)
-    is_silent = features.get('rms_mean', 1.0) < 0.001
-    delta_std = features.get('mfcc_delta_std', 999)
-    if not is_silent:
-        if delta_std < 4.0:
-            score += 25
-            reasons.append(f"Overly smooth MFCC transitions (delta std={delta_std:.2f}) — typical of TTS systems")
-        elif delta_std < 7.0:
-            score += 10
-            reasons.append(f"Moderately smooth MFCC transitions (delta std={delta_std:.2f})")
+    if len(voiced) < 20:
+        return {"score": 0, "confidence": 0.1, "reasons": ["Insufficient voiced frames for pitch analysis."]}
 
-    # Energy flatness: human RMS varies a lot with breath/emotion
-    rms_std = features.get('rms_std', 999)
-    if not is_silent:
-        if rms_std < 0.01:
-            score += 20
-            reasons.append(f"Unnaturally consistent energy (RMS std={rms_std:.4f}) — robotic/TTS characteristic")
-        elif rms_std < 0.025:
-            score += 10
-            reasons.append(f"Low energy variation (RMS std={rms_std:.4f}) — may be TTS")
-    else:
-        reasons.append("Note: Audio is nearly silent; skipping temporal smoothness heuristics.")
+    # ── Jitter (cycle-to-cycle pitch variation) ──────────────────
+    diffs = np.abs(np.diff(voiced))
+    jitter = float(np.mean(diffs) / (np.mean(voiced) + 1e-9))
+    if jitter < CFG.JITTER_SYNTHETIC_THRESHOLD:
+        risk += CFG.WEIGHTS["pitch_jitter"]
+        reasons.append(
+            f"[PITCH] Robotic pitch stability — jitter={jitter:.4f} "
+            f"(threshold < {CFG.JITTER_SYNTHETIC_THRESHOLD}). "
+            f"Human voices show micro-variations > 1.2%. TTS/VC pipelines produce near-zero jitter."
+        )
 
-    # Pitch monotonicity
-    pitch_std = features.get('pitch_std', 0)
-    if not is_silent:
-        if 0 < pitch_std < 15:
-            score += 30
-            reasons.append(f"Unnaturally monotone pitch (std={pitch_std:.1f} Hz) — strong TTS/clone indicator")
-        elif 0 < pitch_std < 25:
-            score += 15
-            reasons.append(f"Low pitch variance (std={pitch_std:.1f} Hz) — possible synthetic voice")
+    # ── Shimmer (amplitude envelope variation per F0 period) ────
+    rms_frames = librosa.feature.rms(y=y, frame_length=512, hop_length=256)[0]
+    if len(rms_frames) > 10:
+        amp_diffs = np.abs(np.diff(rms_frames))
+        shimmer = float(np.mean(amp_diffs) / (np.mean(rms_frames) + 1e-9))
+        if shimmer < CFG.SHIMMER_SYNTHETIC_THRESHOLD:
+            risk += CFG.WEIGHTS["pitch_shimmer"]
+            reasons.append(
+                f"[PITCH] Unnatural amplitude stability — shimmer={shimmer:.4f} "
+                f"(threshold < {CFG.SHIMMER_SYNTHETIC_THRESHOLD}). "
+                f"Real voices have breath-driven amplitude fluctuations."
+            )
 
-    # Spectral flatness
-    flatness = features.get('spectral_flatness', 0)
-    if not is_silent and flatness > 0.3:
-        score += 15
-        reasons.append(f"High spectral flatness ({flatness:.3f}) — synthetic or processed audio")
+    # ── Monotone detection ───────────────────────────────────────
+    pitch_std = float(np.std(voiced))
+    if pitch_std < CFG.PITCH_MONOTONE_VAR_THRESHOLD:
+        risk += CFG.WEIGHTS["pitch_monotone"]
+        reasons.append(
+            f"[PITCH] Extremely monotone delivery — F0 std={pitch_std:.1f} Hz "
+            f"(threshold < {CFG.PITCH_MONOTONE_VAR_THRESHOLD} Hz). "
+            f"Human prosody naturally varies; TTS models default to flat intonation."
+        )
 
-    # Spectral Flux
-    spec_flux = features.get('spec_flux', 100)
-    if not is_silent and spec_flux < 45:
-        score += 20
-        reasons.append(f"Low spectral flux ({spec_flux:.1f}) — speech is unnaturally static/robotic")
-
-    # Spectral Entropy
-    entropy = features.get('spectral_entropy', 1.0)
-    if not is_silent and entropy < 0.35:
-        score += 25
-        reasons.append(f"Unnatural spectral entropy ({entropy:.3f}) — pattern typical of neural vocoder artifacts")
-
-    # High-Frequency Ratio
-    hfr = features.get('hfr', 0.5)
-    if not is_silent:
-        if hfr < 0.02:
-            score += 30
-            reasons.append(f"Severely suppressed high-frequencies (HFR={hfr:.3f}) — typical of low-quality TTS synthesis")
-        elif hfr > 0.8:
-            score += 20
-            reasons.append(f"Excessive high-frequency noise (HFR={hfr:.3f}) — possible synthetic vocoder 'hiss'")
-
-    # Spectral spikes
-    spike_ratio = features.get('spike_ratio', 0)
-    if not is_silent and spike_ratio > 25:
-        score += 25
-        reasons.append(f"Synthetic spectral spikes detected (ratio={spike_ratio:.1f}) — typical of AI vocoder fingerprints")
-
-    return min(100, score), reasons
+    confidence = min(len(voiced) / 100, 1.0)
+    return {
+        "score": min(risk, 100),
+        "confidence": confidence,
+        "is_strong": risk >= 45,
+        "reasons": reasons,
+        "debug": {"jitter": jitter, "pitch_std": pitch_std}
+    }
 
 
+def detect_silence_anomalies(y: np.ndarray, sr: int) -> dict:
+    """
+    Digital-zero silence = TTS. Real mics always have a noise floor.
+    """
+    risk = 0
+    reasons = []
+
+    rms = librosa.feature.rms(y=y, frame_length=512, hop_length=256)[0]
+    silence_mask = rms < CFG.SILENCE_RMS_THRESHOLD
+
+    if silence_mask.sum() == 0:
+        return {"score": 0, "confidence": 0.6, "reasons": ["No silence segments found."]}
+
+    silence_ratio = float(silence_mask.sum() / len(rms))
+    silence_noise = rms[silence_mask]
+    silence_std = float(np.std(silence_noise))
+
+    if silence_std < CFG.SILENCE_NOISE_STD_MAX and silence_ratio > CFG.DIGITAL_SILENCE_RATIO_MIN:
+        risk += CFG.WEIGHTS["digital_silence"]
+        reasons.append(
+            f"[SILENCE] Digital-zero silence detected — ratio={silence_ratio:.1%}, "
+            f"noise_std={silence_std:.5f} (threshold < {CFG.SILENCE_NOISE_STD_MAX}). "
+            f"Real microphones always capture ambient noise floor. "
+            f"TTS renders silence as exact zeros."
+        )
+
+    confidence = min(silence_ratio * 5, 1.0) if silence_ratio > 0 else 0.3
+    return {
+        "score": min(risk, 100),
+        "confidence": confidence,
+        "is_strong": risk >= 25,
+        "reasons": reasons
+    }
+
+
+def detect_spectral_anomalies(y: np.ndarray, sr: int) -> dict:
+    """
+    Spectral flatness and rolloff — vocoder / neural codec fingerprints.
+    """
+    risk = 0
+    reasons = []
+
+    # ── Spectral Flatness ────────────────────────────────────────
+    flatness = float(np.mean(librosa.feature.spectral_flatness(y=y)))
+    if flatness > CFG.SPECTRAL_FLATNESS_TTS_MIN:
+        risk += CFG.WEIGHTS["spectral_flatness"]
+        reasons.append(
+            f"[SPECTRAL] High spectral flatness={flatness:.4f} "
+            f"(threshold > {CFG.SPECTRAL_FLATNESS_TTS_MIN}). "
+            f"Vocoders and neural codecs (EnCodec, HiFi-GAN) produce "
+            f"unnaturally uniform spectral energy distribution."
+        )
+
+    # ── Spectral Rolloff ─────────────────────────────────────────
+    rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr, roll_percent=0.85)
+    rolloff_norm = float(np.mean(rolloff) / (sr / 2))
+    if rolloff_norm > CFG.SPECTRAL_ROLLOFF_AI_MIN:
+        risk += CFG.WEIGHTS["spectral_rolloff"]
+        reasons.append(
+            f"[SPECTRAL] Abnormal spectral rolloff={rolloff_norm:.3f} "
+            f"(normalized, threshold > {CFG.SPECTRAL_ROLLOFF_AI_MIN}). "
+            f"Indicates energy pushed to high frequencies — artifact of neural vocoders."
+        )
+
+    # ── MFCC Delta Flatness (frozen timbre) ──────────────────────
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)
+    mfcc_delta = np.diff(mfcc, axis=1)
+    delta_var = float(np.mean(np.var(mfcc_delta, axis=1)))
+    if delta_var < 1.5:
+        risk += CFG.WEIGHTS["mfcc_delta_flatness"]
+        reasons.append(
+            f"[SPECTRAL] Frozen timbre — MFCC delta variance={delta_var:.3f} "
+            f"(threshold < 1.5). Voice cloning models produce static timbre "
+            f"with minimal temporal MFCC variation."
+        )
+
+    confidence = min(len(y) / (sr * 3), 1.0)
+    return {
+        "score": min(risk, 100),
+        "confidence": confidence,
+        "is_strong": risk >= 35,
+        "reasons": reasons,
+        "debug": {"flatness": flatness, "delta_var": delta_var}
+    }
+
+
+def detect_formant_transitions(y: np.ndarray, sr: int) -> dict:
+    """
+    Abrupt MFCC jumps = voice cloning splice artifacts.
+    """
+    risk = 0
+    reasons = []
+
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    delta = np.abs(np.diff(mfcc, axis=1))
+    threshold = np.percentile(delta, CFG.MFCC_ABRUPT_PERCENTILE)
+    abrupt = np.sum(delta > threshold)
+    ratio = float(abrupt / delta.size)
+
+    if ratio > CFG.MFCC_ABRUPT_RATIO_MAX:
+        risk += CFG.WEIGHTS["formant_transitions"]
+        reasons.append(
+            f"[FORMANT] Abrupt formant transitions — ratio={ratio:.4f} "
+            f"(threshold > {CFG.MFCC_ABRUPT_RATIO_MAX}). "
+            f"Voice cloning systems produce sharp coarticulation artifacts "
+            f"at phoneme boundaries due to segment stitching."
+        )
+
+    confidence = min(mfcc.shape[1] / 50, 1.0)
+    return {
+        "score": min(risk, 100),
+        "confidence": confidence,
+        "is_strong": risk >= 20,
+        "reasons": reasons
+    }
+
+
+def detect_phase_discontinuities(y: np.ndarray, sr: int) -> dict:
+    """
+    Phase wraps at edit points — strongest signal for audio splicing.
+    """
+    risk = 0
+    reasons = []
+
+    ifd_series = _phase_discontinuities(y, sr, win=CFG.PHASE_DISC_WINDOW)
+    if len(ifd_series) < 5:
+        return {"score": 0, "confidence": 0.1, "reasons": ["Insufficient frames for phase analysis."]}
+
+    ifd_arr = np.array(ifd_series)
+    spike_mask = ifd_arr > CFG.PHASE_DISC_THRESHOLD
+    spike_count = int(spike_mask.sum())
+    spike_ratio = float(spike_count / len(ifd_arr))
+
+    if spike_count >= 2:
+        risk += CFG.WEIGHTS["phase_discontinuity"]
+        reasons.append(
+            f"[PHASE] {spike_count} phase discontinuities detected "
+            f"(ratio={spike_ratio:.3f}, threshold > {CFG.PHASE_DISC_THRESHOLD} rad). "
+            f"Sudden instantaneous frequency jumps are a definitive marker of "
+            f"audio splice editing used in voice deepfake assembly."
+        )
+
+    confidence = min(len(ifd_arr) / 30, 1.0)
+    return {
+        "score": min(risk, 100),
+        "confidence": confidence,
+        "is_strong": spike_count >= 3,
+        "reasons": reasons,
+        "debug": {"spike_count": spike_count}
+    }
+
+
+def detect_hnr_anomaly(y: np.ndarray, sr: int) -> dict:
+    """
+    HNR too clean = TTS. Real voices have noise + breathiness.
+    """
+    risk = 0
+    reasons = []
+
+    hnr = _hnr(y, sr)
+    if hnr > CFG.HNR_SYNTHETIC_MIN:
+        risk += CFG.WEIGHTS["hnr_too_clean"]
+        reasons.append(
+            f"[HNR] Suspiciously clean harmonic structure — HNR={hnr:.1f} dB "
+            f"(threshold > {CFG.HNR_SYNTHETIC_MIN} dB). "
+            f"Human voices are naturally noisy (breath, aspiration). "
+            f"Neural vocoders generate near-perfect harmonics."
+        )
+
+    confidence = min(len(y) / (sr * 4), 1.0)
+    return {
+        "score": min(risk, 100),
+        "confidence": confidence,
+        "is_strong": hnr > 28.0,
+        "reasons": reasons,
+        "debug": {"hnr_db": hnr}
+    }
+
+
+def detect_sample_rate_fingerprint(y: np.ndarray, sr: int) -> dict:
+    """
+    TTS pipelines default to 22050 / 24000 Hz.
+    Human recordings are typically 44100 / 48000 Hz.
+    """
+    risk = 0
+    reasons = []
+
+    duration = len(y) / sr
+    if sr in CFG.TTS_SAMPLE_RATES and duration > 2.5:
+        risk += CFG.WEIGHTS["sample_rate_flag"]
+        reasons.append(
+            f"[METADATA] Suspicious sample rate {sr} Hz — "
+            f"common default in TTS pipelines (Tacotron2, VITS, Bark). "
+            f"Human recordings are typically 44.1 kHz or 48 kHz."
+        )
+
+    return {
+        "score": risk,
+        "confidence": 0.9,
+        "is_strong": False,  # Alone it's weak — combine with others
+        "reasons": reasons
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Master entry point
+# ─────────────────────────────────────────────────────────────────
 def analyze_audio(audio_path: str) -> dict:
     """
-    Full enhanced audio analysis combining advanced librosa features.
+    Run full audio forensics pipeline.
+
+    Returns:
+        score       : 0–100 overall risk
+        confidence  : 0–1 how much data backed the analysis
+        is_strong   : True if at least one definitive anchor fired
+        reasons     : List of human-readable forensic findings
+        sub_scores  : Per-detector breakdown
     """
-    if not LIBROSA_OK:
-        return {
-            'score': 0, 'risk_level': 'Low',
-            'reasons': ["Librosa not installed — audio analysis skipped"],
-            'metrics': {},
-            'confidence': 0.0,
-            'is_strong': False
-        }
-
     try:
-        y, sr = librosa.load(audio_path, sr=None, duration=30)  # Max 30s for speed
-        if len(y) == 0:
-            return {'score': 0, 'risk_level': 'Low', 'reasons': ["Empty audio file"], 'metrics': {}, 'confidence': 0.0, 'is_strong': False}
-
-        features = _extract_advanced_features(y, sr)
-        score, reasons = _score_from_features(features)
-
-        # ── 1. Pitch Jitter (Robotic Stability) ──────────────────────────────
-        # Real human voices have micro-variations. TTS/VC is suspiciously smooth.
-        # Already partially covered in _score_from_features, but let's refine.
-        f0, voiced_flag, _ = librosa.pyin(y, fmin=60, fmax=400, sr=sr, fill_na=0)
-        voiced_f0 = f0[voiced_flag > 0]
-        if len(voiced_f0) > 20:
-            jitter = float(np.std(np.diff(voiced_f0)) / (np.mean(voiced_f0) + 1e-9))
-            if jitter < 0.015:
-                score = min(100, score + 30)
-                reasons.append(f"Robotic pitch stability (jitter={jitter:.4f}). Human voices vary > 2%.")
-
-        # ── 2. Silence Profile (Digital Zero Check) ──────────────────────────
-        rms = librosa.feature.rms(y=y)[0]
-        silence_mask = rms < 0.002
-        silence_ratio = float(np.mean(silence_mask))
-        if silence_ratio > 0.1:
-            silence_segments = rms[silence_mask]
-            if len(silence_segments) > 0 and np.std(silence_segments) < 0.0003:
-                score = min(100, score + 25)
-                reasons.append(f"Digital-zero silence detected ({silence_ratio:.1%}). Real mics capture ambient noise.")
-
-        # ── 3. Formant Transitions (Abrupt Shifts) ───────────────────────────
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-        mfcc_delta = np.abs(np.diff(mfcc, axis=1))
-        # Check for outliers in transitions
-        abrupt_threshold = float(np.percentile(mfcc_delta, 97))
-        abrupt_transitions = np.sum(mfcc_delta > abrupt_threshold)
-        transition_ratio = float(abrupt_transitions / mfcc_delta.size)
-        if transition_ratio > 0.04:
-            score = min(100, score + 20)
-            reasons.append(f"Abrupt formant transitions ({transition_ratio:.1%}). Typical of cloning splice artifacts.")
-
-        # ── 4. Metadata Fingerprint ──────────────────────────────────────────
-        if int(sr) in [22050, 24000] and float(len(y)) / float(sr) > 3.0:
-            score = min(100, score + 10)
-            reasons.append(f"Suspicious sample rate {sr}Hz — common in TTS pipelines.")
-
-        confidence = float(min(float(len(y)) / (float(sr) * 5.0 + 1e-9), 1.0))
-        is_strong = score >= 45
-
-        return {
-            'score': score,
-            'risk_level': 'High' if score >= 60 else 'Medium' if score >= 30 else 'Low',
-            'reasons': list(set(reasons)), # Deduplicate
-            'metrics': {
-                **features,
-                'silence_ratio': silence_ratio,
-                'sample_rate': int(sr),
-                'duration_s': round(float(len(y)) / float(sr), 2),
-                'jitter': jitter if 'jitter' in locals() else 0.0,
-                'transition_ratio': transition_ratio if 'transition_ratio' in locals() else 0.0
-            },
-            'confidence': confidence,
-            'is_strong': is_strong
-        }
-
+        y, sr = librosa.load(audio_path, sr=None, mono=True)
     except Exception as e:
-        return {
-            'score': 0, 'risk_level': 'Low',
-            'reasons': [f"Audio analysis error: {str(e)}"],
-            'metrics': {},
-            'confidence': 0.0,
-            'is_strong': False
-        }
+        return {"score": 0, "confidence": 0, "is_strong": False,
+                "reasons": [f"Audio load failed: {e}"], "sub_scores": {}}
 
+    duration = len(y) / sr
+    if duration < CFG.MIN_AUDIO_DURATION:
+        return {"score": 15, "confidence": 0.2, "is_strong": False,
+                "reasons": [f"Audio too short ({duration:.1f}s) for reliable forensics."],
+                "sub_scores": {}}
+
+    # ── Run all detectors ────────────────────────────────────────
+    detectors = {
+        "pitch":       detect_pitch_anomalies(y, sr),
+        "silence":     detect_silence_anomalies(y, sr),
+        "spectral":    detect_spectral_anomalies(y, sr),
+        "formant":     detect_formant_transitions(y, sr),
+        "phase":       detect_phase_discontinuities(y, sr),
+        "hnr":         detect_hnr_anomaly(y, sr),
+        "sample_rate": detect_sample_rate_fingerprint(y, sr),
+    }
+
+    all_reasons = []
+    for d in detectors.values():
+        all_reasons.extend(d.get("reasons", []))
+
+    # ── Confidence-weighted fusion ───────────────────────────────
+    # Strong anchors dominate; weak signals are gated by confidence
+    strong = [d for d in detectors.values()
+              if d.get("is_strong") and d.get("confidence", 0) > 0.5]
+
+    if strong:
+        final_score = max(d["score"] for d in strong)
+        # Accumulate corroborating weak signals (capped contribution)
+        weak_boost = sum(
+            d["score"] * d.get("confidence", 0.5) * 0.15
+            for d in detectors.values()
+            if not d.get("is_strong") and d.get("score", 0) > 10
+        )
+        final_score = min(final_score + weak_boost, 100)
+    else:
+        # No strong anchor — weighted average of confident signals
+        weighted = [
+            (d["score"] * d.get("confidence", 0.5), d.get("confidence", 0.5))
+            for d in detectors.values()
+            if d.get("confidence", 0) > 0.3 and d.get("score", 0) > 0
+        ]
+        if weighted:
+            scores, confs = zip(*weighted)
+            final_score = sum(scores) / sum(confs)
+        else:
+            final_score = 10.0
+
+    overall_confidence = float(np.mean([d.get("confidence", 0.5)
+                                         for d in detectors.values()]))
+    has_strong = len(strong) > 0
+
+    return {
+        "score":      round(min(final_score, 100), 1),
+        "confidence": round(overall_confidence, 3),
+        "is_strong":  has_strong,
+        "reasons":    all_reasons,
+        "sub_scores": {k: {"score": v["score"], "confidence": v.get("confidence", 0)}
+                       for k, v in detectors.items()},
+        "duration_s": round(duration, 2),
+        "sample_rate": sr,
+    }
 
 def get_audio_envelope(audio_path: str, num_points: int = 100) -> list:
     """
     Extracts a simplified RMS envelope from an audio file.
     Used for lip-sync correlation with video Mouth Aspect Ratio (MAR).
     """
-    if not LIBROSA_OK:
-        return [0.0] * num_points
     try:
         y, sr = librosa.load(audio_path, sr=8000, duration=30)
         # Calculate RMS with a window size that gives us ~num_points

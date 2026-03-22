@@ -83,25 +83,36 @@ def generate_final_verdict_ai(all_evidence: dict, skip_llm: bool = False, model:
 
     final_score = base_score + disagreement_bonus
 
-    # ── 4. Graduated Safety Floor ─────────────────────────────────────────────
-    # Instead of a hard 19% cap, we only suppress "background noise" if there's
-    # zero high-confidence evidence and no modal disagreement.
-    has_strong = any(data.get('is_strong') for data in all_evidence.values())
+    # ── 4. Liveness-Based Score Suppression (Biological Filter) ──────────────
+    # If biological liveness is confirmed, we aggressively pull the score down
+    # UNLESS there's a "Strong Anchor" (e.g., FFT Grid, Metadata AI Tag).
+    liveness_confirmed = vid_data.get('metrics', {}).get('liveness_override', False)
+    has_strong_anchor = any(data.get('is_strong') for data in all_evidence.values())
     
-    if final_score < 19 and not has_strong and disagreement_bonus == 0:
-        # Keep low-level heuristics quiet unless they agree or are strong
+    if liveness_confirmed and not has_strong_anchor:
+        final_score = int(min(base_score + disagreement_bonus, 24))
+        meta_reasons.append("Liveness Confirmation: Biological signals (pulse/blinks) detected. Technical scores suppressed.")
+    else:
+        final_score = base_score + disagreement_bonus
+
+    # ── 5. Graduated Safety Floor ─────────────────────────────────────────────
+    # Suppression of "background noise" if there's zero high-confidence evidence.
+    if final_score < 19 and not has_strong_anchor and disagreement_bonus == 0:
         final_score = min(final_score, 19)
     
     final_score = int(min(100, max(0, final_score)))
 
-    # ── 5. Elite Overrides ────────────────────────────────────────────────────
+    # ── 6. Elite Overrides ────────────────────────────────────────────────────
     img_met = img_data.get('metrics', {})
     vid_met = vid_data.get('metrics', {})
     
-    if abs(img_met.get('spectral_slope', -2.2) + 2.2) > 0.6:
-        final_score = max(final_score, 75)
-    if img_met.get('chrom_score', 10.0) < 2.2 and img_score > 25:
-        final_score = max(final_score, 68)
+    # DCT Grid is a very strong anchor
+    if img_met.get('dct_grid_peak_ratio', 0) > 150:
+        final_score = max(final_score, 82)
+    # Metadata AI is definitive
+    if img_data.get('sub_scores', {}).get('metadata', {}).get('score', 0) >= 30:
+        final_score = max(final_score, 95)
+    
     if vid_met.get('iris_jitter_anomaly'):
         final_score = max(final_score, 72)
     
