@@ -460,12 +460,21 @@ def analyze_video(file_path: str, low_resource: bool = False, deep_scan: bool = 
         
         # TIER 3: Low-Confidence Filtering (Safety Floor)
         has_strong_evidence = ai_synth > ForensicConfig.AI_SYNTH_EVIDENCE_THRESHOLD or has_grids or (enough_liveness_data and liveness_anomaly)
+        
+        # Calculate sub-scores for fusion
+        vid_ai_gen = int(ai_synth)
+        vid_manip = int(max(manip_score + liveness_risk + lip_sync_risk, audio_score))
+        
         if final_score < ForensicConfig.SAFETY_CAP_SCORE_LIMIT and not has_strong_evidence:
             final_score = min(final_score, ForensicConfig.SAFETY_CAP_RESULT)
+            vid_ai_gen = min(vid_ai_gen, ForensicConfig.SAFETY_CAP_RESULT)
+            vid_manip = min(vid_manip, ForensicConfig.SAFETY_CAP_RESULT)
             
         # Final Verdict
         res = {
             'score': int(final_score),
+            'ai_gen_score': vid_ai_gen,
+            'manip_score': vid_manip,
             'risk_level': 'High' if final_score >= 60 else 'Medium' if final_score >= 30 else 'Low',
             'reasons': sorted(list(set(frame_reasons + list(audio_reasons)))), 
             'metadata': meta_res,
