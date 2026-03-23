@@ -12,7 +12,8 @@ Version 3.0 uses a **fixed four-step pipeline** (not the legacy weighted max/avg
 
 3. **Cross-Detector Consensus (CDC)** — If 4+ independent sectors (AI, Metadata, Audio, Noise, etc.) fire, the score is boosted and anchored at High Risk (>=85%) or the `CONSENSUS_SCORE_FLOOR`.
 4. **Liveness-gating** — If any **structural** signals (ELA, SRM, AI, Morph) fire, liveness-based reduction is **skipped** to prevent metabolic spoofing.
-5. **apply_safety_floor** — Graduated floors for consistent evidence tracking.
+5. **Improved Confidence Floors** — Audio fusion now uses a 0.3 floor for synthesized signal detection (v3.1).
+6. **apply_safety_floor** — Graduated floors for consistent evidence tracking.
 
 Outputs include **`verdict`** (`HIGH` / `MEDIUM` / `LOW RISK` strings), **`sub_scores`** per modality, merged **`reasons`**, and flags such as **`liveness_detected`**.
 
@@ -36,8 +37,8 @@ Single dataclass **`ForensicConfig`** holds tunables. Examples:
 
 | Area | Examples | Role |
 |------|-----------|------|
-| Image ELA | `ELA_MEAN_THRESHOLD`, `ELA_STD_THRESHOLD` | Standalone JPEGs / PNGs |
-| Video frames | `ELA_MEAN_THRESHOLD_VIDEO`, `ELA_STD_THRESHOLD_VIDEO` | FFmpeg frames run hotter — separate gates |
+| Image ELA | `ELA_MEAN_THRESHOLD` (75.0), `ELA_STD_THRESHOLD` | Standalone JPEGs / PNGs (calibrated for high-quality capture) |
+| Video frames | `ELA_MEAN_THRESHOLD_VIDEO` (24.0), `ELA_STD_THRESHOLD_VIDEO` | FFmpeg frames run hotter — separate gates |
 | Face SSIM | `SSIM_FACE_*`, `SSIM_FACE_MORPH_*` | Dual pathology: too-stable vs too-variable |
 | Face warp | `OPTICAL_FLOW_WARP_THRESHOLD`, `FACE_WARP_*` | ROI optical flow |
 | Morphing fusion | `MORPHING_META_*`, `MORPHING_PHASE_*`, `MORPHING_SPATIAL_WEIGHT` | Unified morph index |

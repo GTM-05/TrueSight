@@ -9,8 +9,8 @@ Cascading **multi-modal** pipeline: fast metadata and heuristics, then deeper im
 ### Image (and video frames)
 
 1. **Quick checks** — Resolution heuristics, optional ViT-style probability, metadata hooks.
-2. **ELA** — Error level analysis; **standalone images** use `ELA_MEAN_THRESHOLD` / `ELA_STD_THRESHOLD`; **video frames** (`source="video"`) use **`ELA_MEAN_THRESHOLD_VIDEO`** / **`ELA_STD_THRESHOLD_VIDEO`** to avoid codec-induced false positives.
-3. **Spectral / chroma / noise / DCT** — Tuned separately for image vs video frame behavior where recompression changes statistics.
+2. **ELA** — Error level analysis; **standalone images** use calibrated thresholds (`ELA_MEAN_THRESHOLD`=75.0 / `ELA_STD_THRESHOLD`=85.0) to accommodate high-quality human samples; **video frames** (`source="video"`) use more sensitive gates (**`ELA_MEAN_THRESHOLD_VIDEO`** / **`ELA_STD_THRESHOLD_VIDEO`**) to catch codec-transient artifacts.
+3. **Spectral / chroma / noise / DCT** — Tuned for image vs video frame behavior. Spectral slope tolerance raised to 2.0 and DCT-GRID ratio to 250.0 to reduce false positives on human-capture images.
 4. **Copy-move** — SIFT-based; higher match threshold for video frames (`COPY_MOVE_MIN_MATCHES_VIDEO`).
 
 ### Video
@@ -25,7 +25,7 @@ Cascading **multi-modal** pipeline: fast metadata and heuristics, then deeper im
 
 ### Audio (standalone or extracted)
 
-- Pitch statistics, MFCC abrupt changes, harmonic-to-noise ratio, spectral flatness, **phase discontinuity** spikes (edit/splice sensitivity), silence / TTS hints.
+- Pitch statistics (robotic jitter < 0.09), MFCC abrupt changes, harmonic-to-noise ratio, **unusually low spectral flatness** (< 0.015), **phase discontinuity** spikes (edit/splice sensitivity with 1.8 threshold), silence / TTS hints.
 
 ### URL
 
@@ -39,6 +39,7 @@ Not a single `max*0.9 + avg*0.1` formula. The engine:
 
 - **Rewards strong modalities** and adds **limited** contribution from weak ones.
 - **Cross-Detector Consensus (CDC)** — If 4+ independent sectors (e.g. AI, Metadata, Noise, ELA) fire, the score is boosted and anchored at High Risk (>=85%) to prevent subtle deepfakes from being missed.
+- **Improved Confidence Gating** — `is_strong` requires > 0.3 confidence for audio following v3.1 refinement.
 - **Penalizes** inconsistent high-confidence modalities (**cross-modal** spread).
 - **Reduces** score when **liveness** supports a real recording, but this is **gated** by structural signals (ELAs, SRM, AI Gen) to avoid spoofing.
 - Applies a **graduated safety floor** so weak evidence does not creep to high risk without anchors.

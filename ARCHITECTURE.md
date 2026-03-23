@@ -18,7 +18,7 @@ Privacy-first, local multimodal forensics: **detectors → fusion math → optio
 |--------|----------------|
 | **`image.py`** | Image and **extracted video frame** analysis; ELA and several stats use **`source="video"`** branches where codec noise differs from standalone files. |
 | **`video.py`** | Frame sampling, temp files, per-frame `analyze_image(..., source="video")`, rPPG / liveness block, optional lip–audio correlation, **`detect_ssim_morphing`**, **`detect_face_warp`**, metadata, WAV extract + **`analyze_audio`**, then **`compute_morphing_score`** for **`morphing_score`**. |
-| **`audio.py`** | Pitch, MFCC, phase discontinuities, HNR, etc.; **`sub_scores`** include structured entries (e.g. phase **`spike_count`**) for morphing fusion. |
+| **`audio.py`** | Pitch, MFCC, phase discontinuities, HNR, etc.; **`sub_scores`** include structured entries (e.g. phase **`spike_count`**) for morphing fusion. Confidence floor refined to 0.3 for synthetic speech detection (v3.1). |
 | **`url.py`** | URL threat / trust heuristics. |
 | **`metadata.py`** | EXIF / container hints. |
 | **`threats.py`** | Binary / malware-style scan for uploads. |
@@ -29,7 +29,7 @@ Privacy-first, local multimodal forensics: **detectors → fusion math → optio
 
 **`compute_final_score(image, audio, video, liveness, url?)`** runs:
 
-1. Fuse modality dicts (strong-anchor + bounded weak boost, or weighted blend).
+1. Fuse modality dicts (strong-anchor + bounded weak boost, or weighted blend). Confident strong signals (score >= 65) anchor the decision.
 2. Cross-modal penalty if confident modalities disagree strongly.
 3. **Cross-Detector Consensus (CDC)** — Boost and anchor score if 4+ independent forensic sectors fire simultaneously.
 4. **Liveness-gating** — Reduction is **skipped** if structural signals (ELA, AI Gen, etc.) are detected, preventing spoofing.
