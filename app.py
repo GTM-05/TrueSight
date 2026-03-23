@@ -489,12 +489,15 @@ with tab2:
 
                 # Weight towards AI-detection score if model was used
                 # Accuracy Boost: Prioritize the most suspicious evidence
-                max_component = max(img_res['score'], meta_res['score'])
-                min_component = min(img_res['score'], meta_res['score'])
+                img_score = img_res.get('score', 0)
+                meta_score = meta_res.get('score', 0)
+                max_component = max(img_score, meta_score)
+                min_component = min(img_score, meta_score)
                 
-                if img_res['metrics'].get('model_used') and img_res['score'] >= 50:
+                img_metrics = img_res.get('metrics', {})
+                if img_metrics.get('model_used') and img_score >= 50:
                     # Model found something, trust it more
-                    combined_score = int(img_res['score'] * 0.9 + meta_res['score'] * 0.1)
+                    combined_score = int(img_score * 0.9 + meta_score * 0.1)
                 else:
                     combined_score = int(max_component * 0.8 + min_component * 0.2)
 
@@ -507,9 +510,9 @@ with tab2:
                     "is_strong": bool(
                         img_res.get("is_strong", False) or meta_s >= 60
                     ),
-                    "visual_score": img_res["score"],
-                    "meta_score": meta_res["score"],
-                    "reasons": img_res["reasons"] + meta_res["reasons"],
+                    "visual_score": img_res.get("score", 0),
+                    "meta_score": meta_res.get("score", 0),
+                    "reasons": img_res.get("reasons", []) + meta_res.get("reasons", []),
                     "sub_scores": img_res.get("sub_scores", {}),
                     "ela_metrics": img_res.get("metrics", {}),
                     "ai_detection": img_res.get("ai_detection", {}),
@@ -529,7 +532,7 @@ with tab2:
                     if threat_res['score'] > 0:
                         st.metric("Malware Threat Score", f"{threat_res['score']}%")
 
-                model_used = img_res['metrics'].get('model_used', False)
+                model_used = img_res.get('metrics', {}).get('model_used', False)
                 ai_det = img_res.get('ai_detection', {})
                 if model_used:
                     st.caption(f"🤖 Model: {ai_det.get('method', 'N/A')} | Label: **{ai_det.get('label', 'N/A')}**")

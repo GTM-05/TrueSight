@@ -56,13 +56,27 @@ def _fuse_results(detectors: dict) -> dict:
 
     overall_conf = float(np.mean([d.get("confidence", 0.5) for d in detectors.values()]))
     
-    return {
+    res = {
         "score": round(final_score, 1),
         "confidence": round(overall_conf, 2),
         "is_strong": len(strong) > 0,
         "reasons": all_reasons,
-        "sub_scores": {k: {"score": v["score"], "confidence": v["confidence"]} for k, v in detectors.items()}
+        "sub_scores": {k: {"score": v["score"], "confidence": v["confidence"]} for k, v in detectors.items()},
+        "metrics": {
+            "ela_mean": detectors.get("ela", {}).get("ela_mean", 0.0),
+            "ela_std_dev": detectors.get("ela", {}).get("ela_std", 0.0),
+            "model_used": False,
+        },
+        "ai_detection": {
+            "ai_probability": 0,
+            "method": "Heuristic Fallback (v3.0)",
+            "label": "Authentic (Heuristic)" if final_score < 50 else "Suspicious (Heuristic)"
+        },
+        "ela_map": None
     }
+    # Backward compatibility: include raw detectors in top level
+    res.update(detectors)
+    return res
 
 def _to_gray(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -120,6 +134,8 @@ def detect_ela(img_bgr: np.ndarray, image_path: str, source: str = "image") -> d
             "confidence": conf,
             "is_strong": is_strong,
             "reasons": reasons,
+            "ela_mean": ela_mean,
+            "ela_std": ela_std,
         }
     except Exception:
         return {"score": 0, "confidence": 0.1, "is_strong": False, "reasons": []}

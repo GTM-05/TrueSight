@@ -165,6 +165,8 @@ def compute_morphing_score(video_result: dict[str, Any], audio_result: dict[str,
     ssim_s = float(mc.get("ssim_morph", 0) or 0)
     warp_s = float(mc.get("face_warp", 0) or 0)
     spatial = max(ssim_s, warp_s) * float(CFG.MORPHING_SPATIAL_WEIGHT)
+    color_s = float(mc.get("color_score", 0) or 0)
+    color_m = min(25.0, color_s * 0.8) # Cap color contribution to morphing index
 
     meta = float((video_result.get("metrics") or {}).get("meta_score", 0) or 0)
     meta_m = min(
@@ -179,7 +181,7 @@ def compute_morphing_score(video_result: dict[str, Any], audio_result: dict[str,
         spikes * float(CFG.MORPHING_PHASE_POINTS_PER_SPIKE),
     )
 
-    return float(min(100.0, spatial + meta_m + phase_m))
+    return float(min(100.0, spatial + color_m + meta_m + phase_m))
 
 
 def apply_safety_floor(
@@ -251,6 +253,7 @@ def _morphing_tagged_reasons(video_result: dict, audio_result: dict) -> list[str
                 "[MORPH",
                 "[META",
                 "[AV-SYNC]",
+                "[COLOR]",
             )
         ):
             out.append(r)

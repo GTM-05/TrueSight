@@ -812,6 +812,7 @@ def analyze_video(
         "morph_components": {
             "ssim_morph": float(morph_ssim.get("score", 0) or 0),
             "face_warp": float(morph_warp.get("score", 0) or 0),
+            "color_score": float(color_agg.get("score", 0) or 0),
         },
     }
     morphing_score = float(compute_morphing_score(video_for_morph, audio_data))
