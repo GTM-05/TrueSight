@@ -66,6 +66,6 @@ Adjust **only `config.py`** for thresholds unless you are changing detector logi
 
 ## Related files
 
-- **`verify_accuracy.py`** — Smoke / optional strict benchmarks on `test_samples/*.mp4`.
+- **`verify_accuracy.py`** — Smoke / optional strict benchmarks on `samples/*.mp4`.
 - **`reports/generator.py`** — Premium dossier PDF from tab-specific dicts.
 - **`llm/report_generator.py`** — Alternative compact PDF that can call Ollama with a simpler prompt.

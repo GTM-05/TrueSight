@@ -86,7 +86,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    base = os.path.join(os.path.dirname(__file__), "test_samples")
+    base = os.path.join(os.path.dirname(__file__), "samples")
     os.makedirs(base, exist_ok=True)
 
     patterns = sorted(glob.glob(os.path.join(base, "*.mp4")))

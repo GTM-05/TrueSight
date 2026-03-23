@@ -107,7 +107,7 @@ source .venv/bin/activate
 python verify_accuracy.py
 ```
 
-Add labeled clips under `test_samples/` (see script docstring). Use **`--strict-benchmarks`** for pass/fail bands on `Showcase_*` files.
+Add labeled clips under `samples/` (see script docstring). Use **`--strict-benchmarks`** for pass/fail bands on `Showcase_*` files.
 
 ---
 

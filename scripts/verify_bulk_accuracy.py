@@ -15,7 +15,7 @@ from config import CFG
 logging.getLogger("truesight.video").setLevel(logging.ERROR)
 
 def test_samples():
-    base_dir = "test_samples/fake videos"
+    base_dir = "samples/fake videos"
     if not os.path.exists(base_dir):
         print(f"Directory {base_dir} not found.")
         return

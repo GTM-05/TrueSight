@@ -40,7 +40,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-**Regression / smoke:** `python verify_accuracy.py` (optional `--strict-benchmarks` for labeled clips in `test_samples/`).
+**Regression / smoke:** `python verify_accuracy.py` (optional `--strict-benchmarks` for labeled clips in `samples/`).
 
 ---
 

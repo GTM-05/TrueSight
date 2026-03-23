@@ -2,7 +2,7 @@
 # Synthetic MP4s for pipeline smoke tests (not representative of human vs deepfake accuracy).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/test_samples"
+OUT="$ROOT/samples"
 mkdir -p "$OUT"
 
 # A: SMPTE bars + 1 kHz tone (5 s)
