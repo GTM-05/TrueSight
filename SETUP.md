@@ -6,16 +6,28 @@ Deploy a **local** environment: FFmpeg on PATH, Python **venv**, optional **Olla
 
 ## 1. Prerequisites
 
-- **OS:** Linux (Ubuntu 22.04+ recommended)  
+- **OS:** Linux (Ubuntu 22.04+ recommended) or **Windows 10/11** (WSL2 not required)
 - **RAM:** 8 GB comfortable; 4 GB possible with **Low Resource Mode** and smaller LLM  
 - **Disk:** ~5–10 GB for Python deps, ViT weights, and Ollama models  
 
 ### System packages
 
+#### Linux (Ubuntu/Debian)
 ```bash
 sudo apt update
 sudo apt install -y ffmpeg python3 python3-venv
 ```
+
+#### Windows
+1. **Python 3.10+**: Install via `python.org` (check "Add to PATH") or run:
+   ```powershell
+   winget install Python.Python.3.12
+   ```
+2. **FFmpeg**: Required. Install via `winget` or download from `gyan.dev`:
+   ```powershell
+   winget install "FFmpeg (Essentials)"
+   ```
+3. **Verify**: Ensure `ffmpeg -version` and `python --version` work in terminal.
 
 `ffmpeg` / `ffprobe` are required for video audio extraction and metadata.
 
@@ -23,10 +35,14 @@ sudo apt install -y ffmpeg python3 python3-venv
 
 ## 2. Ollama (optional but recommended for reports)
 
+#### Linux
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-ollama serve   # background terminal or systemd
+ollama serve
 ```
+
+#### Windows
+Download the installer from [ollama.com](https://ollama.com/download) and run it. The service typically starts automatically in the system tray.
 
 Pull a model that matches **`config.py`** → **`LLM_VERDICT_MODEL`** (default **`qwen2.5:3b`**). Examples:
 
@@ -48,22 +64,33 @@ curl -s http://localhost:11434/api/tags | head
 
 ## 3. Python environment
 
+#### Linux
 ```bash
-cd TrueSight
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -U pip
 pip install -r requirements.txt
 ```
 
-If the system has no `pip` for `python3`, the venv step still provides `pip` inside `.venv`.
+#### Windows (PowerShell)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+> [!TIP]
+> On Windows, if execution of scripts is disabled, run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`.
 
 ---
 
 ## 4. Run the app
 
 ```bash
+# Linux
 source .venv/bin/activate
+# Windows (PowerShell)
+.\.venv\Scripts\Activate.ps1
+
 streamlit run app.py
 ```
 
