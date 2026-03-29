@@ -126,11 +126,11 @@ class ForensicConfig:
     URL_SHORTENER_SCORE: int = 35
     URL_SUSPICIOUS_TLD_SCORE: int = 25
     URL_HOMOGRAPH_SCORE: int = 45
-    URL_FUZZY_SPOOF_SCORE: int = 40
+    URL_FUZZY_SPOOF_SCORE: int = 60   # Raised from 40 — definite spoof = High Risk alone
     URL_FUZZY_RATIO_MIN: float = 0.80
     URL_NO_HTTPS_SCORE: int = 15
-    URL_KEYWORD_SCORE_PER: int = 10
-    URL_KEYWORD_MAX: int = 30
+    URL_KEYWORD_SCORE_PER: int = 20  # Raised from 10 — 3 keywords alone → 60 = High Risk
+    URL_KEYWORD_MAX: int = 60         # Raised from 30 — uncap so multiple keywords compound
     URL_ENTROPY_HIGH: float = 3.8
     URL_ENTROPY_MED: float = 3.2
     URL_ENTROPY_HIGH_SCORE: int = 20
@@ -164,6 +164,12 @@ class ForensicConfig:
         'google','amazon','paypal','microsoft','facebook','netflix',
         'apple','icloud','gmail','outlook','chase','fidelity',
         'instagram','twitter','linkedin','dropbox','github',
+        # Microsoft-family registered domains (subdomains like login.microsoftonline.com)
+        'microsoftonline','office','live','azure','bing','skype',
+        # Apple-family
+        'icloud','appleid',
+        # Google-family
+        'googleapis','googleusercontent','youtube',
     )
     URL_REDIRECT_PARAMS: tuple = (
         'redirect','url=','goto=','next=','return=','redir=',

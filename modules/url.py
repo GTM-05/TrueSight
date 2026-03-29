@@ -16,6 +16,12 @@ def _shannon_entropy(s: str) -> float:
     for c in s: freq[c] = freq.get(c, 0) + 1
     return -sum((f/len(s)) * math.log2(f/len(s)) for f in freq.values())
 
+_LEET_MAP = str.maketrans("013456789", "oieasgtbp")
+
+def _normalize_leet(s: str) -> str:
+    """Replace common digit/leet substitutions to catch g00gle → google."""
+    return s.lower().translate(_LEET_MAP)
+
 def analyze_url(url: str) -> dict:
     """
     Standard contract v3.0 for URL analysis.
@@ -35,6 +41,15 @@ def analyze_url(url: str) -> dict:
     subdomain = ext.subdomain
     reg_domain = ext.registered_domain
 
+    # Initialize common features for UI
+    features.update({
+        "domain": domain,
+        "tld": tld,
+        "subdomain": subdomain,
+        "registered_domain": reg_domain,
+        "subdomain_depth": len(subdomain.split('.')) if subdomain else 0
+    })
+
     # 1. IP-based URL (exclude localhost + RFC1918 private ranges)
     ip_match = re.search(
         r"https?://(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", url_lower
@@ -53,6 +68,13 @@ def analyze_url(url: str) -> dict:
         elif a == 127:
             private = True
     safe_local = any(p in url_lower for p in ["127.0.0.1", "localhost", "::1"])
+    if is_ip and (safe_local or private):
+        # Private/local IP — return early as Low, no further scoring needed
+        return {
+            "score": 0.0, "confidence": 0.5, "is_strong": False,
+            "risk_level": "Low", "reasons": ["[URL] private/local IP address — not a phishing risk."],
+            "features": {**features, "private_ip": True}, "sub_scores": {},
+        }
     if is_ip and not safe_local and not private:
         score += CFG.URL_IP_SCORE
         reasons.append("[URL] direct IP address detected — high-confidence phishing anchor.")
@@ -82,16 +104,26 @@ def analyze_url(url: str) -> dict:
         is_strong = True
         features['homograph'] = True
 
-    # 5. Fuzzy Domain Spoofing
+    # 5. Fuzzy Domain Spoofing (includes leet-speak normalization)
     is_golden = False
+    domain_norm = _normalize_leet(domain)
     for golden in CFG.URL_GOLDEN_DOMAINS:
         if domain == golden:
             is_golden = True
             break
+        # Standard fuzzy match
         ratio = difflib.SequenceMatcher(None, domain, golden).ratio()
         if ratio >= CFG.URL_FUZZY_RATIO_MIN:
             score += CFG.URL_FUZZY_SPOOF_SCORE
             reasons.append(f"[URL] fuzzy domain spoofing: '{domain}' mimics '{golden}'.")
+            is_strong = True
+            features['fuzzy_spoof'] = golden
+            break
+        # Leet-speak / digit-substitution check (e.g. g00gle → google)
+        ratio_norm = difflib.SequenceMatcher(None, domain_norm, golden).ratio()
+        if ratio_norm >= CFG.URL_FUZZY_RATIO_MIN and domain_norm != domain:
+            score += CFG.URL_FUZZY_SPOOF_SCORE
+            reasons.append(f"[URL] leet-speak domain spoofing: '{domain}' mimics '{golden}' (digit substitution).")
             is_strong = True
             features['fuzzy_spoof'] = golden
             break
@@ -103,16 +135,20 @@ def analyze_url(url: str) -> dict:
             score += CFG.URL_NO_HTTPS_SCORE
             reasons.append("[URL] HTTP only — no transport encryption.")
 
-    # 7. Phishing keywords
-    full_dom = f"{subdomain}.{domain}".lower()
-    found_kws = [kw for kw in CFG.URL_PHISHING_KEYWORDS if kw in full_dom]
-    if found_kws:
-        k_score = min(CFG.URL_KEYWORD_MAX, len(found_kws) * CFG.URL_KEYWORD_SCORE_PER)
-        score += k_score
-        reasons.append(f"[URL] phishing keywords detected: {', '.join(found_kws[:3])}.")
+    # 7. Phishing keywords (golden domains are exempt — google.com/microsoftonline.com etc.)
+    if not is_golden:
+        full_dom = f"{subdomain}.{domain}" if subdomain else domain
+        full_dom = full_dom.lower()
+        found_kws = [kw for kw in CFG.URL_PHISHING_KEYWORDS if kw in full_dom]
+        if found_kws:
+            k_score = min(CFG.URL_KEYWORD_MAX, len(found_kws) * CFG.URL_KEYWORD_SCORE_PER)
+            score += k_score
+            reasons.append(f"[URL] phishing keywords detected: {', '.join(found_kws[:3])}. ")
+
 
     # 8. Entropy
     ent = _shannon_entropy(domain)
+    features["domain_entropy"] = round(ent, 2)
     if ent > CFG.URL_ENTROPY_HIGH:
         score += CFG.URL_ENTROPY_HIGH_SCORE
         reasons.append(f"[URL] high domain entropy ({ent:.2f}) — likely random DGA.")
